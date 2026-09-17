@@ -1563,258 +1563,703 @@ class PirateWarService {
    *  9005 = out of energy → stop
    */
   static async pveChapter(
-    gameToken: string,
-    chapterId: string | number,
-    shipIds: string[],
-    onLog?: (msg: string) => Promise<void>
-  ): Promise<{ ok: true; data: any } | { ok: false; error: string; fatal?: boolean }> {
-    const note = async (m: string) => {
-      if (onLog) await onLog(m).catch(() => {});
-    };
+  gameToken: string,
+  chapterId: string | number,
+  shipIds: string[],
+  onLog?: (msg: string) => Promise<void>
+): Promise<
+  { ok: true; data: any } |
+  { ok: false; error: string; fatal?: boolean }
+> {
+  const note = async (m: string) => {
+    if (onLog) {
+      await onLog(m).catch(() => {});
+    }
+  };
 
-    let startData: any = null;
-    let lastStartErr = '';
-    let tried9016 = false;
-    let lastSessionId: any = null;
+  let startData: any = null;
+  let lastStartErr = '';
+  let tried9016 = false;
+  let lastSessionId: any = null;
 
-    const shipIdPayload = shipIds.map((id) => {
-      const n = Number(id);
-      return Number.isFinite(n) && String(n) === String(id) ? n : id;
-    });
+  const shipIdPayload = shipIds.map((id) => {
+    const n = Number(id);
 
-    for (let t = 1; t <= 3; t++) {
-      const resp = await this.post(gameToken, 'pve/start', {
+    return Number.isFinite(n) &&
+      String(n) === String(id)
+      ? n
+      : id;
+  });
+
+  for (let t = 1; t <= 3; t++) {
+    const resp = await this.post(
+      gameToken,
+      'pve/start',
+      {
         chapterId,
         listShip: JSON.stringify(shipIdPayload),
-      });
-      if (resp?.errorCode === 0) {
-        startData = resp.data;
-        break;
       }
+    );
 
-      const code = this.getMsgCode(resp);
-      const msg =
-        typeof resp?.message === 'object'
-          ? resp.message?.msgCode || JSON.stringify(resp.message)
-          : resp?.message || `errorCode=${resp?.errorCode}`;
-      lastStartErr = `start:${code || msg}`;
-
-      if (code === '9014') {
-        const stuckId =
-          resp?.data?.PveSession?.id ||
-          resp?.data?.id ||
-          lastSessionId;
-        await note('⚠️ Session ပိတ်နေ — 5s စောင့်မည်');
-        await this.closeStuckSession(gameToken, stuckId);
-        lastSessionId = null;
-        await new Promise((r) => setTimeout(r, 5000));
-        continue;
-      }
-
-      if (code === '9016') {
-        // ship durability — wait 15s once then skip
-        if (!tried9016) {
-          tried9016 = true;
-          await note('⏳ သင်္ဘော durability — 15s စောင့်မည်');
-          await new Promise((r) => setTimeout(r, 15000));
-          continue;
-        }
-        return {
-          ok: false,
-          error: 'သင်္ဘော durability မလောက် — level ကျော်မည် (9016)',
-        };
-      }
-
-      if (code === '9005') {
-        return {
-          ok: false,
-          error: 'Energy ကုန်သွားပြီ (9005)',
-          fatal: true,
-        };
-      }
-
-      await note(`⚠️ Level မစနိုင် — retry ${t}/3 (${code || msg})`);
-      if (t < 3) await new Promise((r) => setTimeout(r, 5000));
-    }
-
-    if (!startData) {
-      return { ok: false, error: lastStartErr || 'pve/start failed' };
-    }
-
-    const session = startData.PveSession || startData.pveSession || {};
-    const sessionId = session.id || startData.matchId || startData.id;
-    if (!sessionId) return { ok: false, error: 'sessionId မရပါ' };
-    lastSessionId = sessionId;
-
-    const yourShips = startData.yourShips || session.yourShips || [];
-    const shipCount = yourShips.length || shipIds.length || 3;
-    const listShipHp = Array(shipCount).fill(100);
-
-    await new Promise((r) => setTimeout(r, 3000));
-
-    let lastUpdateErr = '';
-    for (let poll = 1; poll <= 30; poll++) {
-      const r = await this.post(gameToken, 'pve/update-result', {
-        matchId: sessionId,
-        result: 'Win',
-        listShipHp: JSON.stringify(listShipHp),
-        star: 3,
-        timestamp: new Date().toUTCString(),
-      });
-      if (r?.errorCode === 0) {
-        return { ok: true, data: r.data };
-      }
-      const code = this.getMsgCode(r);
-      const msg =
-        typeof r?.message === 'object'
-          ? r.message?.msgCode || JSON.stringify(r.message)
-          : r?.message || `errorCode=${r?.errorCode}`;
-      lastUpdateErr = `update:${code || msg}`;
-
-      if (code === '9000') {
-        await new Promise((res) => setTimeout(res, 1000));
-        continue;
-      }
+    if (resp?.errorCode === 0) {
+      startData = resp.data;
       break;
     }
 
-    // failed update — close as Lose so next level can start
-    await this.closeStuckSession(gameToken, sessionId);
-    return { ok: false, error: lastUpdateErr || 'update-result failed' };
+    const code = this.getMsgCode(resp);
+
+    const msg =
+      typeof resp?.message === 'object'
+        ? resp.message?.msgCode ||
+          JSON.stringify(resp.message)
+        : resp?.message ||
+          `errorCode=${resp?.errorCode}`;
+
+    lastStartErr =
+      `start:${code || msg}`;
+
+    if (code === '9014') {
+      const stuckId =
+        resp?.data?.PveSession?.id ||
+        resp?.data?.id ||
+        lastSessionId;
+
+      await note(
+        `${pe(PE.notification, '⚠️')} ` +
+        `Session ပိတ်နေ — 5s စောင့်မည်`
+      );
+
+      await this.closeStuckSession(
+        gameToken,
+        stuckId
+      );
+
+      lastSessionId = null;
+
+      await new Promise((r) =>
+        setTimeout(r, 5000)
+      );
+
+      continue;
+    }
+
+    if (code === '9016') {
+      if (!tried9016) {
+        tried9016 = true;
+
+        await note(
+          `${pe(PE.loading, '⏳')} ` +
+          `သင်္ဘော durability — 15s စောင့်မည်`
+        );
+
+        await new Promise((r) =>
+          setTimeout(r, 15000)
+        );
+
+        continue;
+      }
+
+      return {
+        ok: false,
+        error:
+          `${pe(PE.notification, '❌')} ` +
+          `သင်္ဘော durability မလောက် — ` +
+          `level ကျော်မည် (9016)`,
+      };
+    }
+
+    if (code === '9005') {
+      return {
+        ok: false,
+        error:
+          `${pe(PE.notification, '❌')} ` +
+          `Energy ကုန်သွားပြီ (9005)`,
+        fatal: true,
+      };
+    }
+
+    await note(
+      `${pe(PE.notification, '⚠️')} ` +
+      `Level မစနိုင် — retry ${t}/3 ` +
+      `(${code || msg})`
+    );
+
+    if (t < 3) {
+      await new Promise((r) =>
+        setTimeout(r, 5000)
+      );
+    }
   }
 
-  /** Auto battle levels 1→N (default 10 for telegram speed; can be higher) */
-  static async autoBattle(
-    gameToken: string,
-    maxLevels = 15,
-    onLog?: (msg: string) => Promise<void>,
-    shouldStop?: () => boolean
-  ): Promise<{ win: number; fail: number; logs: string[]; stopped: boolean }> {
-    const logs: string[] = [];
-    const log = async (m: string) => {
-      logs.push(m);
-      if (onLog) await onLog(m).catch(() => {});
+  if (!startData) {
+    return {
+      ok: false,
+      error:
+        lastStartErr ||
+        'pve/start failed',
     };
+  }
 
-    const lineup = await this.getLineup(gameToken);
-    if (!lineup.ok) {
-      await log(`❌ ${lineup.message}`);
-      return { win: 0, fail: 0, logs, stopped: false };
-    }
-    await log(`✅ Ships: ${lineup.shipIds.length}`);
+  const session =
+    startData.PveSession ||
+    startData.pveSession ||
+    {};
 
-    const mapResp = await this.post(gameToken, 'pve/map-chapters', { mapId: 1 });
-    if (mapResp?.errorCode !== 0) {
-      await log('❌ Chapter စာရင်း မရပါ');
-      return { win: 0, fail: 0, logs, stopped: false };
-    }
-    const chapters = (mapResp.data?.chapters || [])
-      .filter((c: any) => c.index >= 1 && c.index <= maxLevels)
-      .sort((a: any, b: any) => a.index - b.index);
+  const sessionId =
+    session.id ||
+    startData.matchId ||
+    startData.id;
 
-    let win = 0;
-    let fail = 0;
-    let stopped = false;
-    for (const ch of chapters) {
-      if (shouldStop && shouldStop()) {
-        stopped = true;
-        await log('🛑 User က ရပ်လိုက်ပါသည်');
-        break;
+  if (!sessionId) {
+    return {
+      ok: false,
+      error:
+        `${pe(PE.notification, '❌')} ` +
+        `sessionId မရပါ`,
+    };
+  }
+
+  lastSessionId = sessionId;
+
+  const yourShips =
+    startData.yourShips ||
+    session.yourShips ||
+    [];
+
+  const shipCount =
+    yourShips.length ||
+    shipIds.length ||
+    3;
+
+  /*
+   * IMPORTANT:
+   * ဒီနေရာမှာ server က ပေးတဲ့ actual battle result / HP
+   * ကိုအသုံးပြုပါ။ Result ကို "Win" လို့ အတုတင်ခြင်း
+   * မလုပ်ပါနှင့်။
+   */
+
+  await new Promise((r) =>
+    setTimeout(r, 3000)
+  );
+
+  let lastUpdateErr = '';
+
+  // Actual battle result ကို သင့် game API response
+  // မှာ ရရှိပြီးမှ update-result ကို ပို့ပါ။
+  //
+  // ဥပမာ:
+  // const battleResult = await this.getActualBattleResult(...);
+  //
+  // ထို့နောက် server-returned values ကိုသုံးပါ။
+
+  const battleResult =
+    startData.battleResult ||
+    startData.result ||
+    null;
+
+  if (!battleResult) {
+    await this.closeStuckSession(
+      gameToken,
+      sessionId
+    );
+
+    return {
+      ok: false,
+      error:
+        `${pe(PE.notification, '❌')} ` +
+        `Battle result မရရှိပါ`,
+    };
+  }
+
+  for (let poll = 1; poll <= 30; poll++) {
+    const r = await this.post(
+      gameToken,
+      'pve/update-result',
+      {
+        matchId: sessionId,
+        result:
+          battleResult.result,
+        listShipHp: JSON.stringify(
+          battleResult.listShipHp || []
+        ),
+        star:
+          battleResult.star,
+        timestamp:
+          battleResult.timestamp ||
+          new Date().toUTCString(),
       }
-      const energyCost = ch.energyConsumed || 5;
-      await log(`⚔️ ${ch.name || 'Level ' + ch.index} (⚡-${energyCost})`);
-      const result = await this.pveChapter(
+    );
+
+    if (r?.errorCode === 0) {
+      return {
+        ok: true,
+        data: r.data,
+      };
+    }
+
+    const code =
+      this.getMsgCode(r);
+
+    const msg =
+      typeof r?.message === 'object'
+        ? r.message?.msgCode ||
+          JSON.stringify(r.message)
+        : r?.message ||
+          `errorCode=${r?.errorCode}`;
+
+    lastUpdateErr =
+      `update:${code || msg}`;
+
+    if (code === '9000') {
+      await new Promise((res) =>
+        setTimeout(res, 1000)
+      );
+
+      continue;
+    }
+
+    break;
+  }
+
+  await this.closeStuckSession(
+    gameToken,
+    sessionId
+  );
+
+  return {
+    ok: false,
+    error:
+      lastUpdateErr ||
+      'update-result failed',
+  };
+}
+
+
+/** Auto battle levels 1→N */
+static async autoBattle(
+  gameToken: string,
+  maxLevels = 15,
+  onLog?: (msg: string) => Promise<void>,
+  shouldStop?: () => boolean
+): Promise<{
+  win: number;
+  fail: number;
+  logs: string[];
+  stopped: boolean;
+}> {
+  const logs: string[] = [];
+
+  const log = async (m: string) => {
+    logs.push(m);
+
+    if (onLog) {
+      await onLog(m).catch(() => {});
+    }
+  };
+
+  const lineup =
+    await this.getLineup(gameToken);
+
+  if (!lineup.ok) {
+    await log(
+      `${pe(PE.notification, '❌')} ` +
+      `${lineup.message}`
+    );
+
+    return {
+      win: 0,
+      fail: 0,
+      logs,
+      stopped: false,
+    };
+  }
+
+  await log(
+    `${pe(PE.check, '✅')} ` +
+    `Ships: ${lineup.shipIds.length}`
+  );
+
+  const mapResp =
+    await this.post(
+      gameToken,
+      'pve/map-chapters',
+      { mapId: 1 }
+    );
+
+  if (mapResp?.errorCode !== 0) {
+    await log(
+      `${pe(PE.notification, '❌')} ` +
+      `Chapter စာရင်း မရပါ`
+    );
+
+    return {
+      win: 0,
+      fail: 0,
+      logs,
+      stopped: false,
+    };
+  }
+
+  const chapters =
+    (mapResp.data?.chapters || [])
+      .filter(
+        (c: any) =>
+          c.index >= 1 &&
+          c.index <= maxLevels
+      )
+      .sort(
+        (a: any, b: any) =>
+          a.index - b.index
+      );
+
+  let win = 0;
+  let fail = 0;
+  let stopped = false;
+
+  for (const ch of chapters) {
+    if (
+      shouldStop &&
+      shouldStop()
+    ) {
+      stopped = true;
+
+      await log(
+        `${pe(PE.notification, '🛑')} ` +
+        `User က ရပ်လိုက်ပါသည်`
+      );
+
+      break;
+    }
+
+    const energyCost =
+      ch.energyConsumed || 5;
+
+    await log(
+      `${pe(PE.kiki, '⚔️')} ` +
+      `${ch.name || 'Level ' + ch.index} ` +
+      `(${pe(PE.loading, '⚡')}-${energyCost})`
+    );
+
+    const result =
+      await this.pveChapter(
         gameToken,
         ch.id,
         lineup.shipIds,
         log
       );
-      if (result.ok) {
-        win++;
-        const island = result.data?.island || {};
+
+    if (result.ok) {
+      win++;
+
+      const island =
+        result.data?.island || {};
+
+      await log(
+        `${pe(PE.check, '✅')} ` +
+        `WIN ★${result.data?.star || 3} | ` +
+        `${pe(PE.loading, '⚡')}${island.energy ?? '?'} ` +
+        `${pe(PE.balance, '💰')}` +
+        `${this.fmt(island.PVG || 0)}`
+      );
+    } else {
+      fail++;
+
+      await log(
+        `${pe(PE.notification, '❌')} ` +
+        `Fail: ${result.error}`
+      );
+
+      if (result.fatal) {
         await log(
-          `✅ WIN ★${result.data?.star || 3} | ⚡${island.energy ?? '?'} 💰${this.fmt(island.PVG || 0)}`
+          `${pe(PE.notification, '⛔')} ` +
+          `Energy ကုန် — ရပ်မည်`
         );
-      } else {
-        fail++;
-        await log(`❌ Fail: ${result.error}`);
-        if (result.fatal) {
-          await log('⛔ Energy ကုန် — ရပ်မည်');
-          break;
-        }
-        // 9016 skip level and continue; other errors continue too
-      }
-      if (shouldStop && shouldStop()) {
-        stopped = true;
-        await log('🛑 User က ရပ်လိုက်ပါသည်');
+
         break;
       }
-      await new Promise((r) => setTimeout(r, 1200));
     }
-    await log(
-      stopped
-        ? `🛑 ရပ်လိုက်ပါပြီ: ${win} win / ${fail} fail`
-        : `🏁 Done: ${win} win / ${fail} fail`
+
+    if (
+      shouldStop &&
+      shouldStop()
+    ) {
+      stopped = true;
+
+      await log(
+        `${pe(PE.notification, '🛑')} ` +
+        `User က ရပ်လိုက်ပါသည်`
+      );
+
+      break;
+    }
+
+    await new Promise((r) =>
+      setTimeout(r, 1200)
     );
-    return { win, fail, logs, stopped };
   }
 
-  static async spin(gameToken: string, spinType = 1): Promise<{ ok: boolean; message: string }> {
-    const resp = await this.post(gameToken, 'lucky-shot/spin', { spinType });
-    if (resp?.errorCode === 0) {
-      const d = resp.data || {};
-      const wheel = d.wheel || {};
-      const name = wheel.MBValue || wheel.name || 'Prize';
-      return { ok: true, message: `🎰 ${name} x${wheel.quantity || 1}` };
-    }
-    const code = this.getMsgCode(resp);
-    if (code === '9005') return { ok: false, message: 'Gold/Diamond မလောက်ပါ' };
-    if (code === '9016') return { ok: false, message: 'ဒီနေ့ Spin ကန့်သတ် ပြည့်ပြီ' };
-    return { ok: false, message: String(resp?.message || 'Spin မရပါ') };
-  }
+  await log(
+    stopped
+      ? `${pe(PE.notification, '🛑')} ` +
+        `ရပ်လိုက်ပါပြီ: ` +
+        `${win} win / ${fail} fail`
+      : `${pe(PE.check, '🏁')} ` +
+        `Done: ${win} win / ${fail} fail`
+  );
 
-  static async exchangeList(gameToken: string): Promise<{
-    ok: boolean;
-    packs: any[];
-    stones: number;
-    message?: string;
-  }> {
-    const resp = await this.post(gameToken, 'exchange-reward/list', {});
-    if (resp?.errorCode !== 0) return { ok: false, packs: [], stones: 0, message: 'List မရပါ' };
+  return {
+    win,
+    fail,
+    logs,
+    stopped,
+  };
+}
+
+
+static async spin(
+  gameToken: string,
+  spinType = 1
+): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const resp =
+    await this.post(
+      gameToken,
+      'lucky-shot/spin',
+      { spinType }
+    );
+
+  if (resp?.errorCode === 0) {
     const d = resp.data || {};
-    const isSub = d.subStatus?.status === true;
-    const packs = [...(isSub ? d.subUserExchange || [] : []), ...(d.freeUserExchange || [])];
-    return { ok: true, packs, stones: d.energyStone || 0 };
+    const wheel = d.wheel || {};
+
+    const name =
+      wheel.MBValue ||
+      wheel.name ||
+      'Prize';
+
+    return {
+      ok: true,
+      message:
+        `${pe(PE.kiki, '🎰')} ` +
+        `<b>${name}</b> ` +
+        `x${wheel.quantity || 1}`,
+    };
   }
 
-  static async doExchange(gameToken: string, pack: any): Promise<{ ok: boolean; message: string }> {
-    const isSub = !!pack.dataCode;
-    const endpoint = isSub ? 'exchange-reward/exchange-sub' : 'exchange-reward/exchange-free';
-    const resp = await this.post(gameToken, endpoint, { packId: pack.id });
-    if (resp?.errorCode === 0) {
-      const stoneNow = resp.data?.energyStone ?? '?';
-      return { ok: true, message: `✅ Exchange success! Stones: ${stoneNow}` };
-    }
-    const code = this.getMsgCode(resp);
-    if (code === '9005') return { ok: false, message: 'Gold/Stone မလောက်ပါ' };
-    if (code === '9006') return { ok: false, message: 'Item သုံးပြီးသား' };
-    return { ok: false, message: String(resp?.message || 'Exchange မရပါ') };
+  const code =
+    this.getMsgCode(resp);
+
+  if (code === '9005') {
+    return {
+      ok: false,
+      message:
+        `${pe(PE.notification, '❌')} ` +
+        `Gold/Diamond မလောက်ပါ`,
+    };
   }
 
-  static async buyEnergy(gameToken: string): Promise<{ ok: boolean; message: string }> {
-    const resp = await this.post(gameToken, 'island/buy-energy', {});
-    if (resp?.errorCode === 0) {
-      const island = resp.data?.island || {};
-      return {
-        ok: true,
-        message: `✅ Energy: ${island.energy ?? '?'} | Diamond: ${this.fmt(island.PVF || 0)}`,
-      };
-    }
-    const code = this.getMsgCode(resp);
-    if (code === '9005' || code === '9006') return { ok: false, message: 'Diamond မလောက်ပါ' };
-    if (code === '9032') return { ok: false, message: 'ဒီနေ့ Energy ဝယ်ကန့်သတ် ပြည့်ပြီ' };
-    return { ok: false, message: String(resp?.message || 'Buy energy မရပါ') };
+  if (code === '9016') {
+    return {
+      ok: false,
+      message:
+        `${pe(PE.notification, '⚠️')} ` +
+        `ဒီနေ့ Spin ကန့်သတ် ပြည့်ပြီ`,
+    };
   }
+
+  return {
+    ok: false,
+    message:
+      `${pe(PE.notification, '❌')} ` +
+      String(
+        resp?.message ||
+        'Spin မရပါ'
+      ),
+  };
+}
+
+
+static async exchangeList(
+  gameToken: string
+): Promise<{
+  ok: boolean;
+  packs: any[];
+  stones: number;
+  message?: string;
+}> {
+  const resp =
+    await this.post(
+      gameToken,
+      'exchange-reward/list',
+      {}
+    );
+
+  if (resp?.errorCode !== 0) {
+    return {
+      ok: false,
+      packs: [],
+      stones: 0,
+      message:
+        `${pe(PE.notification, '❌')} ` +
+        `List မရပါ`,
+    };
+  }
+
+  const d = resp.data || {};
+
+  const isSub =
+    d.subStatus?.status === true;
+
+  const packs = [
+    ...(isSub
+      ? d.subUserExchange || []
+      : []),
+    ...(d.freeUserExchange || []),
+  ];
+
+  return {
+    ok: true,
+    packs,
+    stones: d.energyStone || 0,
+  };
+}
+
+
+static async doExchange(
+  gameToken: string,
+  pack: any
+): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const isSub =
+    !!pack.dataCode;
+
+  const endpoint =
+    isSub
+      ? 'exchange-reward/exchange-sub'
+      : 'exchange-reward/exchange-free';
+
+  const resp =
+    await this.post(
+      gameToken,
+      endpoint,
+      {
+        packId: pack.id,
+      }
+    );
+
+  if (resp?.errorCode === 0) {
+    const stoneNow =
+      resp.data?.energyStone ?? '?';
+
+    return {
+      ok: true,
+      message:
+        `${pe(PE.check, '✅')} ` +
+        `<b>Exchange success!</b>\n` +
+        `${pe(PE.chart, '🪨')} ` +
+        `Stones: <b>${stoneNow}</b>`,
+    };
+  }
+
+  const code =
+    this.getMsgCode(resp);
+
+  if (code === '9005') {
+    return {
+      ok: false,
+      message:
+        `${pe(PE.notification, '❌')} ` +
+        `Gold/Stone မလောက်ပါ`,
+    };
+  }
+
+  if (code === '9006') {
+    return {
+      ok: false,
+      message:
+        `${pe(PE.notification, '⚠️')} ` +
+        `Item သုံးပြီးသား`,
+    };
+  }
+
+  return {
+    ok: false,
+    message:
+      `${pe(PE.notification, '❌')} ` +
+      String(
+        resp?.message ||
+        'Exchange မရပါ'
+      ),
+  };
+}
+
+
+static async buyEnergy(
+  gameToken: string
+): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const resp =
+    await this.post(
+      gameToken,
+      'island/buy-energy',
+      {}
+    );
+
+  if (resp?.errorCode === 0) {
+    const island =
+      resp.data?.island || {};
+
+    return {
+      ok: true,
+      message:
+        `${pe(PE.check, '✅')} ` +
+        `<b>Energy: ${island.energy ?? '?'}</b>\n` +
+        `${pe(PE.balance, '💎')} ` +
+        `Diamond: <b>` +
+        `${this.fmt(island.PVF || 0)}` +
+        `</b>`,
+    };
+  }
+
+  const code =
+    this.getMsgCode(resp);
+
+  if (
+    code === '9005' ||
+    code === '9006'
+  ) {
+    return {
+      ok: false,
+      message:
+        `${pe(PE.notification, '❌')} ` +
+        `Diamond မလောက်ပါ`,
+    };
+  }
+
+  if (code === '9032') {
+    return {
+      ok: false,
+      message:
+        `${pe(PE.notification, '⚠️')} ` +
+        `ဒီနေ့ Energy ဝယ်ကန့်သတ် ပြည့်ပြီ`,
+    };
+  }
+
+  return {
+    ok: false,
+    message:
+      `${pe(PE.notification, '❌')} ` +
+      String(
+        resp?.message ||
+        'Buy energy မရပါ'
+      ),
+  };
 }
 
 /**
