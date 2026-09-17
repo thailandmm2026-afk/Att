@@ -1701,9 +1701,7 @@ class PirateWarService {
       await log(`❌ ${lineup.message}`);
       return { win: 0, fail: 0, logs, stopped: false };
     }
-    await log(
-  `${pe(PE.check, '✅')} Ships: ${lineup.shipIds.length}`
-);
+    await log(`✅ Ships: ${lineup.shipIds.length}`);
 
     const mapResp = await this.post(gameToken, 'pve/map-chapters', { mapId: 1 });
     if (mapResp?.errorCode !== 0) {
@@ -1724,11 +1722,7 @@ class PirateWarService {
         break;
       }
       const energyCost = ch.energyConsumed || 5;
-      await log(
-  `${pe(PE.kiki, '⚔️')} ` +
-  `${ch.name || 'Level ' + ch.index} ` +
-  `(⚡-${energyCost})`
-);
+      await log(`⚔️ ${ch.name || 'Level ' + ch.index} (⚡-${energyCost})`);
       const result = await this.pveChapter(
         gameToken,
         ch.id,
@@ -1739,40 +1733,37 @@ class PirateWarService {
         win++;
         const island = result.data?.island || {};
         await log(
-  `${pe(PE.check, '✅')} WIN ` +
-  `★${result.data?.star || 3} | ` +
-  `${pe(PE.loading, '⚡')}${island.energy ?? '?'} ` +
-  `${pe(PE.balance, '💰')}${this.fmt(island.PVG || 0)}`
-);
+          `✅ WIN ★${result.data?.star || 3} | ⚡${island.energy ?? '?'} 💰${this.fmt(island.PVG || 0)}`
+        );
       } else {
         fail++;
-        await log(
-  `${pe(PE.notification, '❌')} ` +
-  `Fail: ${result.error}`
-);
+        await log(`❌ Fail: ${result.error}`);
         if (result.fatal) {
-          await log(
-  `${pe(PE.notification, '⛔')} ` +
-  `Energy ကုန် — ရပ်မည်`
-);
+          await log('⛔ Energy ကုန် — ရပ်မည်');
+          break;
+        }
         // 9016 skip level and continue; other errors continue too
       }
-      if (shouldStop && shouldStop()) {
-        stopped = true;
-        await log('🛑 User က ရပ်လိုက်ပါသည်');
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1200));
-    }
+              if (shouldStop && shouldStop()) {
+          stopped = true;
+          await log('🛑 User က ရပ်လိုက်ပါသည်');
+          break;
+        }
+
+        await new Promise((r) => setTimeout(r, 1200));
+      }   // ← else ပိတ်
+    }     // ← for ပိတ်
+
     await log(
-  stopped
-    ? `${pe(PE.notification, '🛑')} ` +
-      `ရပ်လိုက်ပါပြီ: ${win} win / ${fail} fail`
-    : `${pe(PE.check, '🏁')} ` +
-      `Done: ${win} win / ${fail} fail`
-);
+      stopped
+        ? `${pe(PE.notification, '🛑')} ` +
+          `ရပ်လိုက်ပါပြီ: ${win} win / ${fail} fail`
+        : `${pe(PE.check, '🏁')} ` +
+          `Done: ${win} win / ${fail} fail`
+    );
+
     return { win, fail, logs, stopped };
-  }
+  }     // ← autoBattle ပိတ်
 
   static async spin(gameToken: string, spinType = 1): Promise<{ ok: boolean; message: string }> {
     const resp = await this.post(gameToken, 'lucky-shot/spin', { spinType });
