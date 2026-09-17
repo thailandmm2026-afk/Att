@@ -1744,26 +1744,20 @@ class PirateWarService {
         }
         // 9016 skip level and continue; other errors continue too
       }
-              if (shouldStop && shouldStop()) {
-          stopped = true;
-          await log('🛑 User က ရပ်လိုက်ပါသည်');
-          break;
-        }
-
-        await new Promise((r) => setTimeout(r, 1200));
-      }   // ← else ပိတ်
-    }     // ← for ပိတ်
-
+      if (shouldStop && shouldStop()) {
+        stopped = true;
+        await log('🛑 User က ရပ်လိုက်ပါသည်');
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+    }
     await log(
       stopped
-        ? `${pe(PE.notification, '🛑')} ` +
-          `ရပ်လိုက်ပါပြီ: ${win} win / ${fail} fail`
-        : `${pe(PE.check, '🏁')} ` +
-          `Done: ${win} win / ${fail} fail`
+        ? `🛑 ရပ်လိုက်ပါပြီ: ${win} win / ${fail} fail`
+        : `🏁 Done: ${win} win / ${fail} fail`
     );
-
     return { win, fail, logs, stopped };
-  }     // ← autoBattle ပိတ်
+  }
 
   static async spin(gameToken: string, spinType = 1): Promise<{ ok: boolean; message: string }> {
     const resp = await this.post(gameToken, 'lucky-shot/spin', { spinType });
