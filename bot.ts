@@ -3239,44 +3239,35 @@ function pe(id: string, fallback: string) {
 
 /** Premium home: real custom emojis + colored buttons */
 function getHomeInlineKeyboard() {
+  // Keep the home keyboard compatible with every Telegram Bot API version.
+  // Custom button icons/styles are intentionally omitted here; the visible
+  // Premium emojis are already included in the message text.
   return {
     inline_keyboard: [
       [
-        {
-          text: 'ATOM',
-          callback_data: 'home_atom',
-          style: 'primary',
-          icon_custom_emoji_id: PE.atom,
-        },
-        {
-          text: 'MYTEL',
-          callback_data: 'home_mytel',
-          style: 'primary',
-          icon_custom_emoji_id: PE.myid,
-        },
+        { text: '🔵 ATOM', callback_data: 'home_atom' },
+        { text: '🟠 MYTEL', callback_data: 'home_mytel' },
       ],
       [
-        {
-          text: 'အသုံးပြုနည်း',
-          callback_data: 'home_help',
-          style: 'success',
-          icon_custom_emoji_id: PE.notification,
-        },
-        {
-          text: 'Profile',
-          callback_data: 'home_profile',
-          style: 'success',
-          icon_custom_emoji_id: PE.userId,
-        },
+        { text: '📖 အသုံးပြုနည်း', callback_data: 'home_help' },
+        { text: '👤 Profile', callback_data: 'home_profile' },
       ],
     ],
   };
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\"/g, '&quot;');
+}
+
 function getHomeMessageText(user?: { id: number; username?: string; first_name?: string; last_name?: string }) {
-  const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(' ') || 'Unknown';
-  const username = user?.username ? `@${user.username}` : '—';
-  const userId = user?.id ?? '—';
+  const fullName = escapeHtml([user?.first_name, user?.last_name].filter(Boolean).join(' ') || 'Unknown');
+  const username = user?.username ? `@${escapeHtml(user.username)}` : '—';
+  const userId = escapeHtml(user?.id ?? '—');
 
   return (
     `${pe(PE.wow, '🏠')} <b>Ki Ki BOT</b>\n` +
@@ -3387,15 +3378,33 @@ async function sendHomeMenu(ctx: any) {
     parse_mode: 'HTML' as const,
     reply_markup: getHomeInlineKeyboard(),
   };
+
   if (ctx.callbackQuery) {
     try {
       await ctx.editMessageText(text, extra);
       return;
-    } catch {
-      // fall through to reply
+    } catch (e: any) {
+      console.error('Home edit failed, falling back to reply:', e?.message || e);
     }
   }
-  await ctx.reply(text, extra);
+
+  try {
+    await ctx.reply(text, extra);
+  } catch (e: any) {
+    // Never let a Telegram markup error break /start for the user.
+    console.error('Home menu send failed, using plain-text fallback:', e?.message || e);
+    const plain =
+      `🏠 Ki Ki BOT\n` +
+      `👤 ID: ${user?.id ?? '—'}\n` +
+      `📛 Name: ${user?.first_name || 'Unknown'}\n` +
+      `🔗 Username: ${user?.username ? '@' + user.username : '—'}\n\n` +
+      `🎮 Game များ ရွေးချယ်ပါ\n\n` +
+      `🔵 ATOM — TOH TOH · ရွှေလယ်တော\n` +
+      `🟠 MYTEL — OU Game · Pirate War`;
+    await ctx.reply(plain, { reply_markup: getHomeInlineKeyboard() }).catch((fallbackErr: any) => {
+      console.error('Home plain fallback failed:', fallbackErr?.message || fallbackErr);
+    });
+  }
 }
 
 // ---------- MyID OTP Wizard ----------
@@ -3791,11 +3800,30 @@ bot.use(async (ctx, next) => {
 });
 
 bot.start(async (ctx) => {
-  const allowed = await enforceChannelJoin(ctx);
-  if (!allowed) return;
-  // Remove old reply keyboard then show premium home with user profile
-  await ctx.reply('✨', Markup.removeKeyboard()).catch(() => {});
-  await sendHomeMenu(ctx);
+  try {
+    const allowed = await enforceChannelJoin(ctx);
+    if (!allowed) return;
+
+    // Remove old reply keyboard then show the home menu.
+    await ctx.reply('✨', Markup.removeKeyboard()).catch(() => {});
+    await sendHomeMenu(ctx);
+  } catch (e: any) {
+    // /start must never become an unhandled Telegraf update.
+    console.error('START handler error:', e?.stack || e?.message || e);
+    await ctx.reply(
+      `🏠 Ki Ki BOT\n\n❌ ခဏအတွင်း အမှားတစ်ခု ဖြစ်သွားပါတယ်။\n/start ကို ပြန်နှိပ်ပေးပါ။`
+    ).catch(() => {});
+  }
+});
+
+// Global safety net: log update errors without crashing the Telegram bot.
+bot.catch((err: any, ctx: any) => {
+  console.error('Telegraf update error:', err?.stack || err?.message || err);
+  try {
+    if (ctx?.reply) {
+      return ctx.reply('❌ လုပ်ဆောင်နေစဉ် အမှားတစ်ခု ဖြစ်သွားပါတယ်။ ခဏနေပြီး ပြန်စမ်းပေးပါ။').catch(() => {});
+    }
+  } catch {}
 });
 
 // Home inline buttons ( style)
