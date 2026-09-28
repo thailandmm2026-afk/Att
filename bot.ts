@@ -1960,6 +1960,153 @@ function isAdmin(ctx: any) {
   return adminId && ctx.from?.id?.toString() === adminId.toString();
 }
 
+/** 1GB နှင့်အထက် data prize ဟုတ်မဟုတ် စစ်ဆေး (1GB, 1.5GB, 2GB, 5GB, 10GB, ...) */
+function isBigDataPrize(prizeName: string): boolean {
+  if (!prizeName) return false;
+  const s = String(prizeName);
+  // e.g. "1GB", "1 GB", "1.5GB", "2G", "10 GB Data", "5000MB" (>=1000MB)
+  const gbMatch = s.match(/(\d+(?:\.\d+)?)\s*G(?:B)?/i);
+  if (gbMatch) {
+    const n = parseFloat(gbMatch[1]);
+    return Number.isFinite(n) && n >= 1;
+  }
+  const mbMatch = s.match(/(\d+(?:\.\d+)?)\s*MB/i);
+  if (mbMatch) {
+    const n = parseFloat(mbMatch[1]);
+    return Number.isFinite(n) && n >= 1000; // 1000MB = 1GB
+  }
+  return false;
+}
+
+/** Atom ကစားသူ 1GB+ data prize ပေါက်ရင် Admin ကို Noti ပို့ + DB သိမ်း */
+async function notifyAdminBigPrize(opts: {
+  prize: string;
+  phone?: string;
+  tgUser?: { id?: number; first_name?: string; last_name?: string; username?: string };
+  gameName?: string;
+}) {
+  const adminId = getAdminId();
+
+  const phone = opts.phone
+    ? String(opts.phone).replace(/\D/g, '').replace(/^95/, '0').replace(/^0?/, '0')
+    : 'N/A';
+  const fullName = [opts.tgUser?.first_name, opts.tgUser?.last_name]
+    .filter(Boolean)
+    .join(' ')
+    .trim() || 'N/A';
+  const username = opts.tgUser?.username
+    ? `@${opts.tgUser.username}`
+    : 'N/A';
+  const userId = opts.tgUser?.id ?? 'N/A';
+  const game = opts.gameName || 'Atom';
+  const now = new Date();
+  const dateKey = now.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  // Myanmar time (UTC+7) for "today"
+  const mmNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  const mmDateKey = mmNow.toISOString().slice(0, 10);
+
+  // DB ထဲ သိမ်း
+  try {
+    const db = await getDb();
+    if (!db.bigPrizes) db.bigPrizes = [];
+    db.bigPrizes.push({
+      prize: opts.prize,
+      phone,
+      name: fullName,
+      username,
+      userId: String(userId),
+      game,
+      at: now.toISOString(),
+      date: mmDateKey,
+    });
+    // keep last 500 only
+    if (db.bigPrizes.length > 500) {
+      db.bigPrizes = db.bigPrizes.slice(-500);
+    }
+    await saveDb(db);
+  } catch (e) {
+    console.error('save bigPrize failed:', e);
+  }
+
+  if (!adminId) return;
+
+  const msg =
+    `🔔 <b>Atom ကစားသူများမှ User တစ်ဦး</b>\n` +
+    `════════════════════\n\n` +
+    `🎮 Game = <b>${game}</b>\n` +
+    `📱 Ph = <code>${phone}</code>\n` +
+    `🏆 Prize = <b>${opts.prize}</b>\n` +
+    `👤 Name = ${fullName}\n` +
+    `🔗 Username = ${username}\n` +
+    `🆔 ID = <code>${userId}</code>`;
+
+  try {
+    await bot.telegram.sendMessage(adminId, msg, { parse_mode: 'HTML' });
+  } catch (e) {
+    console.error('notifyAdminBigPrize failed:', e);
+  }
+}
+
+/** ဒီနေ့ (MM time) 1GB+ ပေါက်သူများ ပြရန် */
+async function renderTodayBigPrizes(ctx: any) {
+  try {
+    const db = await getDb();
+    const mmNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const today = mmNow.toISOString().slice(0, 10);
+    const list = (db.bigPrizes || []).filter((p: any) => p.date === today);
+
+    let msg = `🏆 <b>ဒီနေ့ ပေါက်ထားသူများ</b> (1GB+)\n`;
+    msg += `📅 <code>${today}</code> (MM Time)\n`;
+    msg += `════════════════════\n\n`;
+
+    if (!list.length) {
+      msg += `ℹ️ ဒီနေ့ 1GB+ ပေါက်သူ မရှိသေးပါ။`;
+    } else {
+      msg += `📊 စုစုပေါင်း: <b>${list.length}</b> ကြိမ်\n\n`;
+      // newest first
+      const sorted = [...list].reverse();
+      const maxShow = 30;
+      for (let i = 0; i < Math.min(sorted.length, maxShow); i++) {
+        const p = sorted[i];
+        const t = p.at
+          ? new Date(new Date(p.at).getTime() + 7 * 60 * 60 * 1000)
+              .toISOString()
+              .slice(11, 16)
+          : '--:--';
+        msg +=
+          `${i + 1}. <b>${p.prize}</b> · ${p.game || 'Atom'}\n` +
+          `   📱 <code>${p.phone || 'N/A'}</code>\n` +
+          `   👤 ${p.name || 'N/A'} ${p.username || ''}\n` +
+          `   🆔 <code>${p.userId || 'N/A'}</code> · ⏰ ${t}\n\n`;
+      }
+      if (sorted.length > maxShow) {
+        msg += `\n… နှင့် နောက်ထပ် ${sorted.length - maxShow} ခု`;
+      }
+    }
+
+    const buttons = [
+      [{ text: '🔄 Refresh', callback_data: 'adm_today_prizes' }],
+      [{ text: '« Back to Dashboard', callback_data: 'adm_main' }],
+    ];
+
+    if (ctx.callbackQuery) {
+      await ctx
+        .editMessageText(msg, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: buttons },
+        })
+        .catch(() => {});
+    } else {
+      await ctx.reply(msg, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons },
+      });
+    }
+  } catch (e) {
+    console.error('renderTodayBigPrizes error:', e);
+  }
+}
+
 bot.command('admin', async (ctx, next) => {
   if (!isAdmin(ctx)) return next();
   
@@ -2147,7 +2294,10 @@ bot.on('callback_query', async (ctx, next) => {
       if (data === 'adm_main') {
         broadcastPending.delete(ctx.from!.id);
         await renderAdminDashboard(ctx).catch(e => ctx.reply("Error: " + (e as Error).message));
-      } 
+      }
+      else if (data === 'adm_today_prizes') {
+        await renderTodayBigPrizes(ctx).catch(e => ctx.reply("Error: " + (e as Error).message));
+      }
       else if (data.startsWith('adm_pg_')) {
         const page = parseInt(data.replace('adm_pg_', ''), 10);
         await renderUsersPage(ctx, page).catch(e => ctx.reply("Page Error: " + (e as Error).message));
@@ -2350,7 +2500,14 @@ async function renderAdminDashboard(ctx: any) {
     msg2 += `\n📢 <b>Force-Join Channels</b>: <code>${channels.length}</code>`;
     if (channels.length) msg2 += `\n<code>${channels.join(', ')}</code>`;
 
+    const todayCount = (() => {
+      const mmNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const today = mmNow.toISOString().slice(0, 10);
+      return (db.bigPrizes || []).filter((p: any) => p.date === today).length;
+    })();
+
     const buttons = [
+      [{ text: `🏆 ဒီနေ့ပေါက်ထားသူများ (${todayCount})`, callback_data: 'adm_today_prizes' }],
       [{ text: '📋 View All Users', callback_data: 'adm_pg_0' }],
       [{ text: '🔍 Search User', callback_data: 'adm_s' }],
       [{ text: '📢 Broadcast', callback_data: 'adm_bc' }],
@@ -2502,6 +2659,7 @@ async function getDb() {
   if (!memoryDb.myidSessions) memoryDb.myidSessions = {};
   if (!memoryDb.users) memoryDb.users = {};
   if (!memoryDb.stats) memoryDb.stats = { totalUsers: 0, commandUsage: {} };
+  if (!memoryDb.bigPrizes) memoryDb.bigPrizes = [];
   return memoryDb;
 }
 
@@ -7444,6 +7602,16 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
       }
 
       const prizeName = attr.prizeName ?? 'ဆုတစ်ခု';
+
+      // 10GB ပေါက်ရင် Admin ကို Noti
+      if (isBigDataPrize(prizeName)) {
+        notifyAdminBigPrize({
+          prize: prizeName,
+          phone: sess.msisdn,
+          tgUser: ctx.from,
+          gameName: 'TohToh',
+        }).catch(() => {});
+      }
       
       const balanceText =
         remaining > 0
@@ -7672,6 +7840,16 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
         prize =
           attr.prizeAmountText ||
           'ဆုလက်ဆောင်';
+      }
+
+      // 10GB ပေါက်ရင် Admin ကို Noti
+      if (isBigDataPrize(prize)) {
+        notifyAdminBigPrize({
+          prize: prize,
+          phone: sess.msisdn,
+          tgUser: ctx.from,
+          gameName: 'ရွှေလယ်တော',
+        }).catch(() => {});
       }
 
       // Remaining Coupon
