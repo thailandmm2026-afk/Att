@@ -2028,24 +2028,118 @@ async function notifyAdminBigPrize(opts: {
     console.error('save bigPrize failed:', e);
   }
 
-  if (!adminId) return;
+  // Myanmar time display: DD/MM/YYYY HH:mm:ss
+  const dd = String(mmNow.getUTCDate()).padStart(2, '0');
+  const mm = String(mmNow.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = mmNow.getUTCFullYear();
+  const hh = String(mmNow.getUTCHours()).padStart(2, '0');
+  const min = String(mmNow.getUTCMinutes()).padStart(2, '0');
+  const ss = String(mmNow.getUTCSeconds()).padStart(2, '0');
+  const dateTimeStr = `${dd}/${mm}/${yyyy} ${hh}:${min}:${ss}`;
+
+  const botUsername = bot.botInfo?.username
+    ? `@${bot.botInfo.username}`
+    : '';
+  const botLink = bot.botInfo?.username
+    ? `https://t.me/${bot.botInfo.username}`
+    : '';
 
   const msg =
-    `🔔 <b>Atom ကစားသူများမှ User တစ်ဦး</b>\n` +
-    `════════════════════\n\n` +
-    `🎮 Game = <b>${game}</b>\n` +
-    `📱 Ph = <code>${phone}</code>\n` +
-    `🏆 Prize = <b>${opts.prize}</b>\n` +
-    `👤 Name = ${fullName}\n` +
-    `🔗 Username = ${username}\n` +
-    `🆔 ID = <code>${userId}</code>`;
+    `🎉 <b>ATOM PLAYER WINNER</b>\n\n` +
+    `✅ <b>${game}</b>\n\n` +
+    `👤 User: ${username}\n` +
+    `💙 Fullname: ${fullName}\n` +
+    `📞 Phone: <code>${phone}</code>\n` +
+    `💰 Prize : <b>${opts.prize}</b>\n` +
+    `🆔 User ID : <code>${userId}</code>\n` +
+    `📅 Date Time : <code>${dateTimeStr}</code>\n\n` +
+    `🔗 Bot: ${botLink || botUsername || '—'}`;
 
+  // Admin Noti
+  if (adminId) {
+    try {
+      await bot.telegram.sendMessage(adminId, msg, { parse_mode: 'HTML' });
+    } catch (e) {
+      console.error('notifyAdminBigPrize admin failed:', e);
+    }
+  }
+
+  // Prize Post Channel auto-post
   try {
-    await bot.telegram.sendMessage(adminId, msg, { parse_mode: 'HTML' });
+    const ch = await getPrizePostChannel();
+    if (ch) {
+      await bot.telegram.sendMessage(ch, msg, { parse_mode: 'HTML' });
+    }
   } catch (e) {
-    console.error('notifyAdminBigPrize failed:', e);
+    console.error('notifyAdminBigPrize channel post failed:', e);
   }
 }
+
+/** Prize auto-post channel (DB) */
+async function getPrizePostChannel(): Promise<string | null> {
+  const db = await getDb();
+  const ch = db.prizePostChannel;
+  return ch && String(ch).trim() ? String(ch).trim() : null;
+}
+
+async function setPrizePostChannel(channel: string | null): Promise<void> {
+  const db = await getDb();
+  if (channel && String(channel).trim()) {
+    let ch = String(channel).trim();
+    if (!ch.startsWith('@') && !ch.startsWith('-') && !/^\d+$/.test(ch)) {
+      ch = '@' + ch;
+    }
+    db.prizePostChannel = ch;
+  } else {
+    db.prizePostChannel = null;
+  }
+  await saveDb(db);
+}
+
+/** Admin: Prize Post Channel စီမံ panel */
+async function renderPrizePostChannel(ctx: any) {
+  try {
+    const ch = await getPrizePostChannel();
+    let msg = `📣 <b>Prize Auto-Post Channel</b>\n`;
+    msg += `════════════════════\n\n`;
+    msg += `1GB+ ပေါက်ရင် ဒီ channel ဆီ auto post တင်ပေးပါတယ်။\n\n`;
+    if (ch) {
+      msg += `✅ လက်ရှိ Channel:\n<code>${ch}</code>\n\n`;
+    } else {
+      msg += `⚠️ Channel မသတ်မှတ်ရသေးပါ (auto-post ပိတ်ထားသည်)\n\n`;
+    }
+    msg += `📌 Bot ကို target channel ထဲမှာ <b>Admin</b> အဖြစ် ထည့်ပေးရပါမယ် (post တင်နိုင်ဖို့)။\n`;
+    msg += `📌 Public channel: <code>@channelusername</code>\n`;
+    msg += `📌 Private channel: channel ID (ဥပမာ <code>-1001234567890</code>)`;
+
+    const buttons: any[][] = [];
+    buttons.push([{ text: ch ? '✏️ Channel ပြောင်းမယ်' : '➕ Channel ထည့်မယ်', callback_data: 'adm_prize_ch_set' }]);
+    if (ch) {
+      buttons.push([{ text: '🗑 Channel ဖျက်မယ်', callback_data: 'adm_prize_ch_clear' }]);
+    }
+    buttons.push([{ text: '🔄 Refresh', callback_data: 'adm_prize_ch' }]);
+    buttons.push([{ text: '« Back to Dashboard', callback_data: 'adm_main' }]);
+
+    if (ctx.callbackQuery) {
+      await ctx
+        .editMessageText(msg, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: buttons },
+        })
+        .catch(() => {});
+    } else {
+      await ctx.reply(msg, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons },
+      });
+    }
+  } catch (e) {
+    console.error('renderPrizePostChannel error:', e);
+  }
+}
+
+// Admin pending state for setting prize post channel
+const prizeChannelPending = new Map<number, boolean>();
 
 /** ဒီနေ့ (MM time) 1GB+ ပေါက်သူများ ပြရန် */
 async function renderTodayBigPrizes(ctx: any) {
@@ -2293,10 +2387,39 @@ bot.on('callback_query', async (ctx, next) => {
 
       if (data === 'adm_main') {
         broadcastPending.delete(ctx.from!.id);
+        prizeChannelPending.delete(ctx.from!.id);
         await renderAdminDashboard(ctx).catch(e => ctx.reply("Error: " + (e as Error).message));
       }
       else if (data === 'adm_today_prizes') {
         await renderTodayBigPrizes(ctx).catch(e => ctx.reply("Error: " + (e as Error).message));
+      }
+      else if (data === 'adm_prize_ch') {
+        prizeChannelPending.delete(ctx.from!.id);
+        await renderPrizePostChannel(ctx).catch(e => ctx.reply("Error: " + (e as Error).message));
+      }
+      else if (data === 'adm_prize_ch_set') {
+        prizeChannelPending.set(ctx.from!.id, true);
+        await ctx.editMessageText(
+          `📣 <b>Prize Post Channel သတ်မှတ်ရန်</b>\n\n` +
+          `Channel username သို့မဟုတ် ID ကို ပို့ပေးပါ။\n\n` +
+          `ဥပမာ:\n` +
+          `• <code>@mychannel</code>\n` +
+          `• <code>-1001234567890</code>\n\n` +
+          `❌ ပယ်ဖျက်ရန်: <code>/cancel</code>\n\n` +
+          `⚠️ Bot ကို channel ထဲမှာ <b>Admin</b> ထည့်ထားရပါမယ်။`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [[{ text: '« နောက်သို့', callback_data: 'adm_prize_ch' }]],
+            },
+          }
+        ).catch(() => {});
+      }
+      else if (data === 'adm_prize_ch_clear') {
+        prizeChannelPending.delete(ctx.from!.id);
+        await setPrizePostChannel(null);
+        await ctx.answerCbQuery('✅ Prize channel ဖျက်ပြီးပါပြီ', { show_alert: true }).catch(() => {});
+        await renderPrizePostChannel(ctx).catch(() => {});
       }
       else if (data.startsWith('adm_pg_')) {
         const page = parseInt(data.replace('adm_pg_', ''), 10);
@@ -2427,6 +2550,66 @@ bot.on('callback_query', async (ctx, next) => {
 });
 
 /**
+ * When admin is setting Prize Post Channel, capture text message.
+ */
+bot.on('message', async (ctx, next) => {
+  if (!ctx.from || !isAdmin(ctx)) return next();
+  if (!prizeChannelPending.get(ctx.from.id)) return next();
+
+  const text =
+    ctx.message && 'text' in ctx.message ? String(ctx.message.text || '').trim() : '';
+
+  if (text.startsWith('/cancel')) {
+    prizeChannelPending.delete(ctx.from.id);
+    await ctx.reply('❌ Prize channel သတ်မှတ်မှု ပယ်ဖျက်လိုက်ပါပြီ။');
+    return;
+  }
+  if (text.startsWith('/')) return next();
+
+  if (!text) {
+    await ctx.reply('❌ Channel username သို့မဟုတ် ID စာသား ပို့ပေးပါ။');
+    return;
+  }
+
+  // Accept @username, username, or -100... numeric id
+  let ch = text.split(/\s+/)[0];
+  if (!ch.startsWith('@') && !ch.startsWith('-') && !/^\d+$/.test(ch)) {
+    ch = '@' + ch;
+  }
+
+  prizeChannelPending.delete(ctx.from.id);
+  await setPrizePostChannel(ch);
+
+  // Try a test post (optional soft check)
+  let testNote = '';
+  try {
+    await bot.telegram.sendMessage(
+      ch,
+      `✅ <b>Prize Auto-Post Channel</b> ချိတ်ဆက်ပြီးပါပြီ။\n1GB+ ပေါက်ရင် ဒီ channel ဆီ auto post တင်ပါမယ်။`,
+      { parse_mode: 'HTML' }
+    );
+    testNote = '\n\n✅ Test message channel ဆီ ပို့နိုင်ပါတယ်။';
+  } catch (e: any) {
+    testNote =
+      `\n\n⚠️ Channel ဆီ message ပို့မရပါ: <code>${(e?.message || 'error').slice(0, 120)}</code>\n` +
+      `Bot ကို channel ထဲမှာ Admin ထည့်ထားကြောင်း စစ်ပေးပါ။`;
+  }
+
+  await ctx.reply(
+    `✅ Prize Post Channel သတ်မှတ်ပြီးပါပြီ။\n\n📣 <code>${ch}</code>${testNote}`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📣 Prize Channel Panel', callback_data: 'adm_prize_ch' }],
+          [{ text: '« Dashboard', callback_data: 'adm_main' }],
+        ],
+      },
+    }
+  );
+});
+
+/**
  * When admin is in Broadcast mode, capture ANY message (photo/text/video/...)
  * and ask for confirmation. copyMessage later preserves Premium Emoji + media.
  */
@@ -2506,12 +2689,15 @@ async function renderAdminDashboard(ctx: any) {
       return (db.bigPrizes || []).filter((p: any) => p.date === today).length;
     })();
 
+    const prizeCh = db.prizePostChannel ? String(db.prizePostChannel) : null;
+
     const buttons = [
       [{ text: `🏆 ဒီနေ့ပေါက်ထားသူများ (${todayCount})`, callback_data: 'adm_today_prizes' }],
+      [{ text: prizeCh ? `📣 Prize Channel: ${prizeCh.slice(0, 20)}` : '📣 Prize Post Channel', callback_data: 'adm_prize_ch' }],
       [{ text: '📋 View All Users', callback_data: 'adm_pg_0' }],
       [{ text: '🔍 Search User', callback_data: 'adm_s' }],
       [{ text: '📢 Broadcast', callback_data: 'adm_bc' }],
-      [{ text: '📢 Channels', callback_data: 'adm_channels' }],
+      [{ text: '📢 Channels (Force-Join)', callback_data: 'adm_channels' }],
       [{ text: '🔄 Refresh', callback_data: 'adm_main' }]
     ];
 
@@ -7609,7 +7795,7 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
           prize: prizeName,
           phone: sess.msisdn,
           tgUser: ctx.from,
-          gameName: 'TohToh',
+          gameName: 'Toh Toh',
         }).catch(() => {});
       }
       
