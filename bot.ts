@@ -92,15 +92,33 @@ class MyIdService {
       });
       if (res.data?.errorCode === 200 && res.data?.result) {
         const result = res.data.result;
+        // access_token / accessToken / token / jwt — API field name ကွဲနိုင်
+        const token =
+          result.access_token ||
+          result.accessToken ||
+          result.token ||
+          result.jwt ||
+          result.id_token ||
+          result.idToken ||
+          '';
+        if (!token) {
+          console.error('MyID OTP ok but no token in result keys:', Object.keys(result || {}));
+          return null;
+        }
         return {
           phone: clean,
-          access_token: result.access_token,
-          full_name: result.full_name || '',
+          access_token: String(token),
+          full_name: result.full_name || result.fullName || result.name || '',
           avatar: result.avatar || 'https://s3.mytel.com.mm/myid-avatar/avatar/default.jpg',
+          subId: result.subId || result.sub_id || result.subscriberId
+            ? String(result.subId || result.sub_id || result.subscriberId)
+            : undefined,
         };
       }
+      console.error('MyID verifyOtp failed:', res.status, JSON.stringify(res.data)?.slice(0, 300));
       return null;
-    } catch {
+    } catch (e: any) {
+      console.error('MyID verifyOtp exception:', e?.message || e);
       return null;
     }
   }
@@ -1435,29 +1453,74 @@ class PirateWarService {
     return CryptoJS.AES.encrypt(JSON.stringify(payload), PIRATE_AES_KEY).toString();
   }
 
-  static async login(mytelJwt: string): Promise<{ ok: boolean; gameToken?: string; message?: string }> {
-    try {
-      const res = await axios.post(
-        PIRATE_API + 'user/login',
-        { token: mytelJwt },
-        {
-          headers: { 'Content-Type': 'application/json' },
+  static async login(
+    mytelJwt: string,
+    phone?: string
+  ): Promise<{ ok: boolean; gameToken?: string; message?: string; raw?: any }> {
+    if (!mytelJwt || !String(mytelJwt).trim()) {
+      return { ok: false, message: 'MyID token မရှိပါ' };
+    }
+    const token = String(mytelJwt).trim();
+    // Pirate API က body ပုံစံ အမျိုးမျိုး လက်ခံနိုင် — တစ်ခုချင်း စမ်း
+    const bodies: any[] = [
+      { token },
+      { accessToken: token },
+      { access_token: token },
+      { jwt: token },
+      { mytelToken: token },
+    ];
+    if (phone) {
+      const p = String(phone).replace(/\D/g, '');
+      bodies.push({ token, phone: p });
+      bodies.push({ token, msisdn: p });
+      bodies.push({ accessToken: token, phone: p });
+    }
+
+    let lastMsg = 'Login failed';
+    let lastRaw: any = null;
+
+    for (const body of bodies) {
+      try {
+        const res = await axios.post(PIRATE_API + 'user/login', body, {
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
           httpsAgent: pirateHttpsAgent,
           timeout: 20000,
           validateStatus: () => true,
+        });
+        lastRaw = res.data;
+        const data = res.data || {};
+        const accessToken =
+          data?.data?.accessToken ||
+          data?.data?.access_token ||
+          data?.data?.token ||
+          data?.accessToken ||
+          data?.token;
+        if ((data?.errorCode === 0 || data?.errorCode === '0') && accessToken) {
+          return { ok: true, gameToken: String(accessToken), raw: data };
         }
-      );
-      if (res.data?.errorCode === 0 && res.data?.data?.accessToken) {
-        return { ok: true, gameToken: res.data.data.accessToken };
+        const msg =
+          typeof data?.message === 'object'
+            ? data.message?.msgCode || data.message?.message || JSON.stringify(data.message)
+            : data?.message || data?.msg || `errorCode=${data?.errorCode ?? res.status}`;
+        lastMsg = String(msg);
+        // invalid token — no point trying more body shapes with same bad token
+        if (
+          /invalid|expire|unauthorized|token/i.test(lastMsg) &&
+          bodies.indexOf(body) >= 2
+        ) {
+          break;
+        }
+      } catch (e: any) {
+        lastMsg = e?.message || 'Network error';
+        console.error('Pirate login network error:', lastMsg);
       }
-      const msg =
-        typeof res.data?.message === 'object'
-          ? res.data.message?.msgCode || JSON.stringify(res.data.message)
-          : res.data?.message || 'Login failed';
-      return { ok: false, message: String(msg) };
-    } catch (e: any) {
-      return { ok: false, message: e?.message || 'Network error' };
     }
+
+    console.error('Pirate login failed:', lastMsg, lastRaw ? JSON.stringify(lastRaw).slice(0, 400) : '');
+    return { ok: false, message: lastMsg, raw: lastRaw };
   }
 
   static async post(
@@ -1820,12 +1883,13 @@ class PirateWarService {
 /**
  * MyID session ရှိပြီးသား → Pirate War game token အလိုအလျောက် ယူသည်
  * သီးသန့် Pirate login မလိုအပ်ပါ
+ * returns { session } or { error }
  */
 async function ensurePirateSession(
   tgUserId: number,
   myIdSess: MyIdSession,
   forceRefresh = false
-): Promise<PirateSession | null> {
+): Promise<{ session: PirateSession | null; error?: string }> {
   const existing = pirateSessions.get(tgUserId);
   // same MyID token already mapped
   if (
@@ -1833,15 +1897,21 @@ async function ensurePirateSession(
     existing?.gameToken &&
     existing.mytelJwt === myIdSess.access_token
   ) {
-    return existing;
+    return { session: existing };
   }
 
-  if (!myIdSess.access_token) return null;
+  if (!myIdSess?.access_token) {
+    return { session: null, error: 'MyID access_token မရှိပါ — MYTEL Login ပြန်လုပ်ပါ' };
+  }
 
-  const login = await PirateWarService.login(myIdSess.access_token);
+  const login = await PirateWarService.login(
+    myIdSess.access_token,
+    myIdSess.phone
+  );
   if (!login.ok || !login.gameToken) {
-    console.error('Pirate auto-connect failed:', login.message);
-    return null;
+    const err = login.message || 'Pirate login failed';
+    console.error('Pirate auto-connect failed:', err);
+    return { session: null, error: err };
   }
 
   const sess: PirateSession = {
@@ -1850,7 +1920,7 @@ async function ensurePirateSession(
     phone: myIdSess.phone,
   };
   pirateSessions.set(tgUserId, sess);
-  return sess;
+  return { session: sess };
 }
 
 
@@ -2846,6 +2916,7 @@ async function getDb() {
   if (!memoryDb.users) memoryDb.users = {};
   if (!memoryDb.stats) memoryDb.stats = { totalUsers: 0, commandUsage: {} };
   if (!memoryDb.bigPrizes) memoryDb.bigPrizes = [];
+  if (!memoryDb.gameSchedules) memoryDb.gameSchedules = [];
   return memoryDb;
 }
 
@@ -3642,8 +3713,8 @@ function getAtomReplyKeyboard(loggedIn: boolean) {
     ['🔴 TohToh Live ဝယ်ယူရန်'],
     ['🌾 ရွှေလယ်တော ကူပွန်', '🐔 ရွှေလယ်တော ဆော့ရန်'],
     ['🟡 ရွှေလယ်တော Live ဝယ်ယူရန်'],
-    ['🎁 Daily Point Claim', '🔄 ATOM ထွက်ရန်'],
-    ['🏠 ပင်မစာမျက်နှာ'],
+    ['⏰ Auto Schedule', '🎁 Daily Point Claim'],
+    ['🔄 ATOM ထွက်ရန်', '🏠 ပင်မစာမျက်နှာ'],
   ]).resize();
 }
 
@@ -3661,8 +3732,8 @@ function getMytelReplyKeyboard(loggedIn: boolean) {
     ['🛒 Mytel Package ဝယ်ရန်', '📜 Point History'],
     ['🎁 Daily Claim', '📡 Network Test'],
     ['😎 Ou Game ဆော့မယ်', '⛵ Pirate War ဆော့မယ်'],
-    ['🔄 MYTEL Logout'],
-    ['🏠 ပင်မစာမျက်နှာ'],
+    ['⏰ Auto Schedule'],
+    ['🔄 MYTEL Logout', '🏠 ပင်မစာမျက်နှာ'],
   ]).resize();
 }
 
@@ -4041,8 +4112,31 @@ const myidAuthWizard = new Scenes.WizardScene<any>(
           session
         );
 
+        // Pirate War ချိတ်ဆက် စမ်းကြည့် (OTP token သုံးလို့ရမရ)
+        let pirateNote = '';
+        try {
+          const { session: pirate, error: pErr } = await ensurePirateSession(
+            ctx.from!.id,
+            session,
+            true
+          );
+          if (pirate) {
+            pirateNote =
+              `\n\n${pe(PE.check, '✅')} <b>Pirate War</b> ချိတ်ဆက်ပြီးပါပြီ။`;
+          } else {
+            pirateNote =
+              `\n\n${pe(PE.notification, '⚠️')} <b>Pirate War</b> ချိတ်မရသေးပါ။\n` +
+              `<code>${String(pErr || 'unknown').slice(0, 150)}</code>\n` +
+              `OU Game တော့ သုံးလို့ရနိုင်ပါတယ်။ Pirate အတွက် Access Token နဲ့ ပြန်ဝင်ကြည့်ပါ။`;
+          }
+        } catch (e: any) {
+          pirateNote =
+            `\n\n${pe(PE.notification, '⚠️')} Pirate စစ်ဆေးမှု မအောင်မြင်: <code>${String(e?.message || e).slice(0, 100)}</code>`;
+        }
+
         await ctx.reply(
-          `${pe(PE.check, '✅')} <b>MYTEL အကောင့်ဝင်တာ အောင်မြင်ပါပြီ။</b> 🎉`,
+          `${pe(PE.check, '✅')} <b>MYTEL အကောင့်ဝင်တာ အောင်မြင်ပါပြီ။</b> 🎉` +
+          pirateNote,
           {
             parse_mode: 'HTML',
             ...getMytelReplyKeyboard(true),
@@ -5863,41 +5957,30 @@ bot.hears(
       );
     }
 
-    let pirate = await ensurePirateSession(ctx.from.id, sess);
+    const wait = await ctx.reply(
+      `${pe(PE.loading, '⏳')} <b>Pirate War ချိတ်ဆက်နေပါတယ်...</b>`,
+      { parse_mode: 'HTML' }
+    );
+
+    let { session: pirate, error: pirateErr } = await ensurePirateSession(
+      ctx.from.id,
+      sess,
+      true
+    );
+
+    await ctx.telegram
+      .deleteMessage(ctx.chat.id, wait.message_id)
+      .catch(() => {});
 
     if (!pirate) {
-      const wait = await ctx.reply(
-        `${pe(PE.loading, '⏳')} <b>ခဏစောင့်ပါ...</b>`,
-        { parse_mode: 'HTML' }
-      );
-
-      try {
-        pirate = await ensurePirateSession(
-          ctx.from.id,
-          sess,
-          true
-        );
-
-        await ctx.telegram
-          .deleteMessage(ctx.chat.id, wait.message_id)
-          .catch(() => {});
-      } catch (e: any) {
-        await ctx.telegram
-          .deleteMessage(ctx.chat.id, wait.message_id)
-          .catch(() => {});
-
-        return ctx.reply(
-          `${pe(PE.notification, '❌')} <b>${e?.message || e}</b>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-    }
-
-    if (!pirate) {
+      const detail = pirateErr
+        ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>`
+        : '';
       return ctx.reply(
         `${pe(PE.notification, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-        `${pe(PE.myid, '📱')} MyID token သက်တမ်းကုန်နေနိုင်ပါတယ်။\n` +
-        `<b>MYTEL Logout</b> ပြီး ပြန် Login လုပ်ပါ။`,
+        `${pe(PE.myid, '📱')} MyID token မမှန်/သက်တမ်းကုန် ဖြစ်နိုင်ပါတယ်။\n` +
+        `<b>MYTEL Logout</b> ပြီး OTP နဲ့ ပြန် Login လုပ်ပါ။` +
+        detail,
         {
           parse_mode: 'HTML',
           ...getMytelReplyKeyboard(true),
@@ -5942,7 +6025,11 @@ bot.hears('👤 Pirate Profile', async (ctx) => {
   );
 
   try {
-    const pirate = await ensurePirateSession(ctx.from.id, sess);
+    const { session: pirate, error: pirateErr } = await ensurePirateSession(
+      ctx.from.id,
+      sess,
+      true
+    );
 
     if (!pirate) {
       await ctx.telegram
@@ -5951,7 +6038,8 @@ bot.hears('👤 Pirate Profile', async (ctx) => {
 
       return ctx.reply(
         `${pe(PE.notification, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-        `MYTEL ပြန် Login လုပ်ပေးပါ။`,
+        `MYTEL ပြန် Login လုပ်ပေးပါ။` +
+        (pirateErr ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>` : ''),
         { parse_mode: 'HTML' }
       );
     }
@@ -6016,12 +6104,17 @@ bot.hears('⚔️ Auto Battle', async (ctx) => {
     );
   }
 
-  const pirate = await ensurePirateSession(ctx.from.id, sess);
+  const { session: pirate, error: pirateErr } = await ensurePirateSession(
+    ctx.from.id,
+    sess,
+    true
+  );
 
   if (!pirate) {
     return ctx.reply(
       `${pe(PE.notification, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-      `MYTEL ပြန် Login လုပ်ပေးပါ။`,
+      `MYTEL ပြန် Login လုပ်ပေးပါ။` +
+      (pirateErr ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>` : ''),
       { parse_mode: 'HTML' }
     );
   }
@@ -6171,12 +6264,17 @@ bot.hears('🎰 Lucky Spin', async (ctx) => {
     );
   }
 
-  const pirate = await ensurePirateSession(ctx.from.id, sess);
+  const { session: pirate, error: pirateErr } = await ensurePirateSession(
+    ctx.from.id,
+    sess,
+    true
+  );
 
   if (!pirate) {
     return ctx.reply(
       `${pe(PE.notification, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-      `MYTEL ပြန် Login လုပ်ပေးပါ။`,
+      `MYTEL ပြန် Login လုပ်ပေးပါ။` +
+      (pirateErr ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>` : ''),
       { parse_mode: 'HTML' }
     );
   }
@@ -6238,12 +6336,17 @@ bot.hears('🔄 Pirate Exchange', async (ctx) => {
     );
   }
 
-  const pirate = await ensurePirateSession(ctx.from.id, sess);
+  const { session: pirate, error: pirateErr } = await ensurePirateSession(
+    ctx.from.id,
+    sess,
+    true
+  );
 
   if (!pirate) {
     return ctx.reply(
       `${pe(PE.notification, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-      `MYTEL ပြန် Login လုပ်ပေးပါ။`,
+      `MYTEL ပြန် Login လုပ်ပေးပါ။` +
+      (pirateErr ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>` : ''),
       { parse_mode: 'HTML' }
     );
   }
@@ -6354,15 +6457,17 @@ bot.action(/^pw:ex:(.+)$/, async (ctx) => {
     );
   }
 
-  const pirate = await ensurePirateSession(
+  const { session: pirate, error: pirateErr } = await ensurePirateSession(
     ctx.from!.id,
-    sess
+    sess,
+    true
   );
 
   if (!pirate) {
     return ctx.reply(
       `${pe(PE.x, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-      `MYTEL ပြန် Login လုပ်ပေးပါ။`,
+      `MYTEL ပြန် Login လုပ်ပေးပါ။` +
+      (pirateErr ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>` : ''),
       {
         parse_mode: 'HTML',
       }
@@ -6429,12 +6534,17 @@ bot.hears('⚡ Buy Energy', async (ctx) => {
     );
   }
 
-  const pirate = await ensurePirateSession(ctx.from.id, sess);
+  const { session: pirate, error: pirateErr } = await ensurePirateSession(
+    ctx.from.id,
+    sess,
+    true
+  );
 
   if (!pirate) {
     return ctx.reply(
       `${pe(PE.x, '❌')} <b>Pirate War ချိတ်ဆက်မရပါ။</b>\n\n` +
-      `MYTEL ပြန် Login လုပ်ပေးပါ။`,
+      `MYTEL ပြန် Login လုပ်ပေးပါ။` +
+      (pirateErr ? `\n\n📋 <code>${String(pirateErr).slice(0, 200)}</code>` : ''),
       { parse_mode: 'HTML' }
     );
   }
@@ -9700,11 +9810,689 @@ bot.action('cityrun:claim:auto', async (ctx) => {
 });
 
 // ==========================================
+// ⏰ GAME AUTO SCHEDULE
+// ==========================================
+
+type GameScheduleType = 'tohtoh' | 'goldenfarm' | 'ougame' | 'pirate';
+
+interface GameSchedule {
+  id: string;
+  tgUserId: number;
+  chatId: number;
+  game: GameScheduleType;
+  /** HH:MM Myanmar time */
+  time: string;
+  /** how many plays; 0 = until no coupon/turns left (max 50 safety) */
+  count: number;
+  /** next run ISO */
+  nextRunAt: string;
+  enabled: boolean;
+  createdAt: string;
+}
+
+const scheduleWizard = new Map<
+  number,
+  { step: 'game' | 'time' | 'count'; game?: GameScheduleType }
+>();
+
+const GAME_LABELS: Record<GameScheduleType, string> = {
+  tohtoh: '🎮 Toh Toh',
+  goldenfarm: '🐔 ရွှေလယ်တော',
+  ougame: '😎 OU Game (MyID Go)',
+  pirate: '⛵ Pirate War (Auto Battle)',
+};
+
+function mmNowDate(): Date {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000);
+}
+
+function parseHHMM(s: string): { h: number; m: number } | null {
+  const m = String(s).trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return { h, m: min };
+}
+
+/** next occurrence of HH:MM in Myanmar time → UTC ISO */
+function nextRunIsoFromHHMM(time: string): string {
+  const p = parseHHMM(time);
+  if (!p) return new Date().toISOString();
+  const now = mmNowDate();
+  const target = new Date(now);
+  target.setUTCHours(p.h, p.m, 0, 0);
+  if (target.getTime() <= now.getTime() + 30_000) {
+    target.setUTCDate(target.getUTCDate() + 1);
+  }
+  // convert MM wall-clock back to real UTC
+  return new Date(target.getTime() - 7 * 60 * 60 * 1000).toISOString();
+}
+
+function fmtMmTime(iso: string): string {
+  const d = new Date(new Date(iso).getTime() + 7 * 60 * 60 * 1000);
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = d.getUTCFullYear();
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
+}
+
+async function loadSchedules(): Promise<GameSchedule[]> {
+  const db = await getDb();
+  if (!Array.isArray(db.gameSchedules)) db.gameSchedules = [];
+  return db.gameSchedules as GameSchedule[];
+}
+
+async function saveSchedules(list: GameSchedule[]) {
+  const db = await getDb();
+  db.gameSchedules = list;
+  await saveDb(db);
+}
+
+async function addSchedule(s: GameSchedule) {
+  const list = await loadSchedules();
+  list.push(s);
+  await saveSchedules(list);
+}
+
+async function removeSchedule(id: string, tgUserId: number) {
+  const list = await loadSchedules();
+  await saveSchedules(list.filter((x) => !(x.id === id && x.tgUserId === tgUserId)));
+}
+
+async function getUserSchedules(tgUserId: number): Promise<GameSchedule[]> {
+  return (await loadSchedules()).filter((x) => x.tgUserId === tgUserId && x.enabled);
+}
+
+/** ---- silent play helpers (no Telegram ctx required for API) ---- */
+
+async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: string; message: string }> {
+  const sess = await getSession(tgUserId);
+  if (!sess) return { ok: false, message: 'ATOM login မရှိ' };
+  const dashRes = await authApiGet(
+    tgUserId,
+    `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+  );
+  if (dashRes?._authFailed) return { ok: false, message: 'ATOM token expired' };
+  if (!dashRes || dashRes.status !== 'success') return { ok: false, message: 'TohToh dashboard error' };
+  const count = Number(dashRes.data?.attribute?.couponBalance?.totalCoupon ?? 0);
+  if (count <= 0) return { ok: false, message: 'coupon မကျန်' };
+  let maxLevel = 3;
+  if (Array.isArray(dashRes.data?.attribute?.levelData)) {
+    const levels = dashRes.data.attribute.levelData
+      .map((l: any) => Number(l?.level))
+      .filter((n: number) => Number.isFinite(n));
+    if (levels.length) maxLevel = Math.max(...levels);
+  }
+  const res = await authApiPost(
+    tgUserId,
+    `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`,
+    { isCompleted: 1, currentPlayLevel: maxLevel, chosenPrize: 'Instant' }
+  );
+  setGameCooldown(tgUserId);
+  if (res?._authFailed) return { ok: false, message: 'ATOM token expired' };
+  if (res?.status === 'success' && res.data?.attribute) {
+    const prize = res.data.attribute.prizeName ?? 'ဆု';
+    if (isBigDataPrize(prize)) {
+      const db = await getDb();
+      const u = db.users?.[String(tgUserId)] || {};
+      notifyAdminBigPrize({
+        prize,
+        phone: sess.msisdn,
+        tgUser: { id: tgUserId, first_name: u.first_name, last_name: u.last_name, username: u.username },
+        gameName: 'Toh Toh',
+      }).catch(() => {});
+    }
+    return { ok: true, prize, message: `Toh Toh: ${prize}` };
+  }
+  return {
+    ok: false,
+    message: res?.errors?.message?.message || res?.message || 'TohToh draw failed',
+  };
+}
+
+async function playGoldenFarmOnce(tgUserId: number): Promise<{ ok: boolean; prize?: string; message: string }> {
+  const sess = await getSession(tgUserId);
+  if (!sess) return { ok: false, message: 'ATOM login မရှိ' };
+  const dashRes = await authApiGet(
+    tgUserId,
+    `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+  );
+  if (dashRes?._authFailed) return { ok: false, message: 'ATOM token expired' };
+  if (!dashRes || dashRes.status !== 'success') return { ok: false, message: 'GoldenFarm dashboard error' };
+  const count = Number(dashRes.data?.attribute?.couponBalance ?? 0);
+  if (count <= 0) return { ok: false, message: 'coupon မကျန်' };
+  let maxScore = 165;
+  const levelData = dashRes.data?.attribute?.levelData;
+  if (Array.isArray(levelData)) {
+    const scores = levelData.map((l: any) => Number(l?.score ?? 0)).filter((n: number) => Number.isFinite(n));
+    if (scores.length) {
+      const highest = Math.max(...scores);
+      if (highest > 0) maxScore = highest;
+    }
+  }
+  const minScore = Math.max(0, maxScore - 5);
+  const randomScore = Math.floor(Math.random() * (maxScore - minScore + 1)) + minScore;
+  const res = await authApiPost(
+    tgUserId,
+    `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`,
+    { score: randomScore }
+  );
+  setGameCooldown(tgUserId);
+  if (res?._authFailed) return { ok: false, message: 'ATOM token expired' };
+  if (res?.status === 'success' && res.data?.attribute) {
+    const attr = res.data.attribute;
+    let prize = attr.prizeName;
+    if (!prize && attr.message) {
+      const match = String(attr.message).match(/ဖြစ်ပြီး\s+(.*?)\s+ကို/);
+      if (match?.[1]) prize = match[1].trim();
+    }
+    if (!prize) prize = attr.prizeAmountText || 'ဆု';
+    if (isBigDataPrize(prize)) {
+      const db = await getDb();
+      const u = db.users?.[String(tgUserId)] || {};
+      notifyAdminBigPrize({
+        prize,
+        phone: sess.msisdn,
+        tgUser: { id: tgUserId, first_name: u.first_name, last_name: u.last_name, username: u.username },
+        gameName: 'ရွှေလယ်တော',
+      }).catch(() => {});
+    }
+    return { ok: true, prize, message: `ရွှေလယ်တော: ${prize}` };
+  }
+  return { ok: false, message: res?.message || 'GoldenFarm draw failed' };
+}
+
+async function playOuGameRounds(
+  tgUserId: number,
+  rounds: number
+): Promise<{ ok: boolean; message: string }> {
+  const my = await getMyIdSession(tgUserId);
+  if (!my?.access_token) return { ok: false, message: 'MYTEL login မရှိ' };
+  const gameToken = await MyIdService.getGameToken(my);
+  if (!gameToken) return { ok: false, message: 'OU game token မရ' };
+  const turns = await MyIdService.getTurns(gameToken);
+  const total = Number(turns?.total ?? 0);
+  if (total <= 0) return { ok: false, message: 'turns မကျန်' };
+  const n = Math.min(rounds <= 0 ? total : rounds, total, 10);
+  const rewards: string[] = [];
+  let grand = 0;
+  for (let r = 1; r <= n; r++) {
+    const { rewards: rw, total: t } = await MyIdService.playRound(gameToken, r, async () => {});
+    grand += Number(t ?? 0);
+    if (Array.isArray(rw)) rewards.push(...rw);
+    await new Promise((res) => setTimeout(res, 800));
+  }
+  return {
+    ok: true,
+    message: `OU Game ${n} ပွဲ · total ${grand}\n${rewards.slice(0, 8).join('\n')}`,
+  };
+}
+
+async function playPirateOnce(tgUserId: number): Promise<{ ok: boolean; message: string }> {
+  const my = await getMyIdSession(tgUserId);
+  if (!my?.access_token) return { ok: false, message: 'MYTEL login မရှိ' };
+  const { session: pirate, error } = await ensurePirateSession(tgUserId, my, true);
+  if (!pirate) return { ok: false, message: error || 'Pirate ချိတ်မရ' };
+  pirateStopFlags.set(tgUserId, false);
+  const result = await PirateWarService.autoBattle(pirate.gameToken, 15, async () => {});
+  return {
+    ok: true,
+    message: `Pirate Auto Battle: ${result.win}W / ${result.fail}F${result.stopped ? ' (stopped)' : ''}`,
+  };
+}
+
+async function runScheduleJob(job: GameSchedule) {
+  const targetCount = job.count <= 0 ? 50 : Math.min(job.count, 50);
+  const lines: string[] = [];
+  let done = 0;
+  let stopReason = '';
+
+  try {
+    await bot.telegram.sendMessage(
+      job.chatId,
+      `⏰ <b>Auto Schedule စတင်ပါပြီ</b>\n` +
+        `${GAME_LABELS[job.game]}\n` +
+        `ပွဲ: <b>${job.count <= 0 ? 'ကုန်သည်အထိ' : job.count}</b>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    for (let i = 0; i < targetCount; i++) {
+      let r: { ok: boolean; message: string; prize?: string };
+      if (job.game === 'tohtoh') r = await playTohTohOnce(job.tgUserId);
+      else if (job.game === 'goldenfarm') r = await playGoldenFarmOnce(job.tgUserId);
+      else if (job.game === 'ougame') r = await playOuGameRounds(job.tgUserId, 1);
+      else r = await playPirateOnce(job.tgUserId);
+
+      if (!r.ok) {
+        stopReason = r.message;
+        break;
+      }
+      done++;
+      lines.push(`${done}. ${r.message}`);
+      // cooldown between ATOM plays
+      if (job.game === 'tohtoh' || job.game === 'goldenfarm') {
+        await new Promise((res) => setTimeout(res, 3500));
+      } else if (job.game === 'ougame') {
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+    }
+  } catch (e: any) {
+    stopReason = e?.message || String(e);
+  }
+
+  let summary =
+    `✅ <b>Auto Schedule ပြီးပါပြီ</b>\n` +
+    `${GAME_LABELS[job.game]}\n` +
+    `ကစားပြီး: <b>${done}</b> ပွဲ\n`;
+  if (stopReason) summary += `ရပ်ရခြင်း: <code>${escapeHtml(stopReason).slice(0, 120)}</code>\n`;
+  if (lines.length) summary += `\n` + lines.slice(0, 15).map((l) => escapeHtml(l)).join('\n');
+
+  await bot.telegram.sendMessage(job.chatId, summary, { parse_mode: 'HTML' }).catch(() => {});
+
+  // တစ်ကြိမ်သာ — ပြီးရင် schedule ဖျက် (နေ့တိုင်း auto မလုပ်)
+  const list = await loadSchedules();
+  await saveSchedules(list.filter((x) => x.id !== job.id));
+}
+
+let scheduleTickerRunning = false;
+async function scheduleTick() {
+  if (scheduleTickerRunning) return;
+  scheduleTickerRunning = true;
+  try {
+    const list = await loadSchedules();
+    const now = Date.now();
+    const due: GameSchedule[] = [];
+    const remain: GameSchedule[] = [];
+    for (const job of list) {
+      if (!job.enabled) {
+        remain.push(job);
+        continue;
+      }
+      const t = new Date(job.nextRunAt).getTime();
+      if (!Number.isFinite(t) || t > now) {
+        remain.push(job);
+        continue;
+      }
+      // due — remove from list first (one-shot) to avoid double fire
+      due.push(job);
+    }
+    if (due.length) {
+      await saveSchedules(remain);
+      for (const job of due) {
+        runScheduleJob(job).catch((e) => console.error('schedule job error', e));
+      }
+    }
+  } catch (e) {
+    console.error('scheduleTick error', e);
+  } finally {
+    scheduleTickerRunning = false;
+  }
+}
+
+/** လက်ရှိ ကစားခွင့် အကြိမ်ရေ ရယူ */
+async function getAvailablePlayCount(
+  tgUserId: number,
+  game: GameScheduleType
+): Promise<number> {
+  try {
+    if (game === 'tohtoh') {
+      const sess = await getSession(tgUserId);
+      if (!sess) return 0;
+      const dashRes = await authApiGet(
+        tgUserId,
+        `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+      );
+      if (!dashRes || dashRes.status !== 'success' || dashRes._authFailed) return 0;
+      return Math.max(0, Number(dashRes.data?.attribute?.couponBalance?.totalCoupon ?? 0));
+    }
+    if (game === 'goldenfarm') {
+      const sess = await getSession(tgUserId);
+      if (!sess) return 0;
+      const dashRes = await authApiGet(
+        tgUserId,
+        `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+      );
+      if (!dashRes || dashRes.status !== 'success' || dashRes._authFailed) return 0;
+      return Math.max(0, Number(dashRes.data?.attribute?.couponBalance ?? 0));
+    }
+    if (game === 'ougame') {
+      const my = await getMyIdSession(tgUserId);
+      if (!my?.access_token) return 0;
+      const gameToken = await MyIdService.getGameToken(my);
+      if (!gameToken) return 0;
+      const turns = await MyIdService.getTurns(gameToken);
+      return Math.max(0, Number(turns?.total ?? 0));
+    }
+    // pirate — energy-based; allow 1–5 schedule slots
+    return 5;
+  } catch {
+    return 0;
+  }
+}
+
+function buildCountButtons(available: number): any[][] {
+  const max = Math.min(Math.max(available, 0), 40);
+  if (max <= 0) return [[{ text: '❌ ကစားခွင့် မရှိ', callback_data: 'sch:menu' }]];
+  const rows: any[][] = [];
+  let row: any[] = [];
+  for (let i = 1; i <= max; i++) {
+    row.push({ text: `${i}`, callback_data: `sch:c:${i}` });
+    if (row.length === 5) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length) rows.push(row);
+  // full amount shortcut
+  if (max > 1) {
+    rows.push([{ text: `✅ အားလုံး (${max})`, callback_data: `sch:c:${max}` }]);
+  }
+  rows.push([{ text: '« နောက်သို့', callback_data: 'sch:menu' }]);
+  return rows;
+}
+
+function buildTimeButtons(): any[][] {
+  // Myanmar time quick picks — hourly-ish
+  const times = [
+    '06:00', '07:00', '08:00', '09:00', '10:00',
+    '11:00', '12:00', '13:00', '14:00', '15:00',
+    '16:00', '17:00', '18:00', '19:00', '20:00',
+    '21:00', '22:00', '23:00', '00:00', '05:00',
+  ];
+  const rows: any[][] = [];
+  let row: any[] = [];
+  for (const t of times) {
+    row.push({ text: t, callback_data: `sch:t:${t}` });
+    if (row.length === 5) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length) rows.push(row);
+  rows.push([{ text: '« နောက်သို့', callback_data: 'sch:menu' }]);
+  return rows;
+}
+
+function startScheduleTicker() {
+  setInterval(() => {
+    scheduleTick().catch(() => {});
+  }, 20_000);
+  console.log('⏰ Game schedule ticker started (20s)');
+}
+
+async function renderScheduleMenu(ctx: any) {
+  const list = await getUserSchedules(ctx.from.id);
+  let msg =
+    `⏰ <b>Auto Schedule</b>\n` +
+    `════════════════════\n\n` +
+    `သတ်မှတ်အချိန်ရောက်ရင် <b>တစ်ကြိမ်သာ</b> ကိုယ်တိုင် ကစားပေးပါတယ်။\n` +
+    `ပြီးရင် schedule အလိုအလျောက် ပျက်ပါမယ် — နောက်နေ့ ပြန်သတ်မှတ်ပေးရပါမယ်။\n` +
+    `(Myanmar time UTC+7)\n\n`;
+  if (!list.length) {
+    msg += `ℹ️ စောင့်ဆိုင်းနေသော schedule မရှိသေးပါ။\n`;
+  } else {
+    msg += `📋 <b>စောင့်ဆိုင်းနေသော schedules</b>\n`;
+    list.forEach((s, i) => {
+      msg +=
+        `${i + 1}. ${GAME_LABELS[s.game]}\n` +
+        `   🕐 ${s.time} · <b>${s.count}</b> ပွဲ\n` +
+        `   ⏭ ${fmtMmTime(s.nextRunAt)}\n`;
+    });
+  }
+  const buttons: any[][] = [
+    [
+      { text: '🎮 Toh Toh', callback_data: 'sch:new:tohtoh' },
+      { text: '🐔 ရွှေလယ်တော', callback_data: 'sch:new:goldenfarm' },
+    ],
+    [
+      { text: '😎 OU Game', callback_data: 'sch:new:ougame' },
+      { text: '⛵ Pirate', callback_data: 'sch:new:pirate' },
+    ],
+    [{ text: '📋 ကျွန်ုပ်၏ Schedules', callback_data: 'sch:list' }],
+    [{ text: '🗑 အားလုံး ဖျက်မယ်', callback_data: 'sch:clear' }],
+  ];
+  if (ctx.callbackQuery) {
+    await ctx.editMessageText(msg, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buttons },
+    }).catch(() => {});
+  } else {
+    await ctx.reply(msg, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buttons },
+    });
+  }
+}
+
+bot.hears('⏰ Auto Schedule', async (ctx) => {
+  scheduleWizard.delete(ctx.from.id);
+  await renderScheduleMenu(ctx);
+});
+
+bot.action(/^sch:new:(tohtoh|goldenfarm|ougame|pirate)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const game = ctx.match[1] as GameScheduleType;
+  // login checks
+  if (game === 'tohtoh' || game === 'goldenfarm') {
+    const sess = await getSession(ctx.from!.id);
+    if (!sess) {
+      return ctx.reply('❌ ATOM login လုပ်ပြီးမှ schedule ထည့်ပါ။', { parse_mode: 'HTML' });
+    }
+  } else {
+    const my = await getMyIdSession(ctx.from!.id);
+    if (!my) {
+      return ctx.reply('❌ MYTEL login လုပ်ပြီးမှ schedule ထည့်ပါ။', { parse_mode: 'HTML' });
+    }
+  }
+  scheduleWizard.set(ctx.from!.id, { step: 'time', game });
+  await ctx.editMessageText(
+    `⏰ <b>${GAME_LABELS[game]}</b>\n\n` +
+      `စတင်မယ့် <b>အချိန်</b> ကို button နှိပ်ပြီး ရွေးပါ။\n` +
+      `(Myanmar time)\n\n` +
+      `သို့မဟုတ် <code>HH:MM</code> ရိုက်ပို့နိုင်ပါတယ်။`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buildTimeButtons() },
+    }
+  ).catch(() => {});
+});
+
+bot.action(/^sch:t:(\d{2}:\d{2})$/, async (ctx) => {
+  await ctx.answerCbQuery('အကြိမ်ရေ စစ်နေ...').catch(() => {});
+  const time = ctx.match[1];
+  const w = scheduleWizard.get(ctx.from!.id);
+  if (!w?.game) {
+    return renderScheduleMenu(ctx);
+  }
+  w.step = 'count';
+  (w as any).time = time;
+  scheduleWizard.set(ctx.from!.id, w);
+
+  const available = await getAvailablePlayCount(ctx.from!.id, w.game);
+  if (available <= 0) {
+    await ctx.editMessageText(
+      `❌ <b>${GAME_LABELS[w.game]}</b>\n\n` +
+        `လက်ရှိ ကစားခွင့် (coupon/turns) <b>မရှိ</b> သေးပါ။\n` +
+        `ကူပွန်/turns ရပြီးမှ schedule ထည့်ပါ။`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '« နောက်သို့', callback_data: 'sch:menu' }]],
+        },
+      }
+    ).catch(() => {});
+    return;
+  }
+
+  await ctx.editMessageText(
+    `⏰ <b>${GAME_LABELS[w.game]}</b> · <code>${time}</code>\n\n` +
+      `လက်ကျန်: <b>${available}</b> ကြိမ်\n\n` +
+      `ဘယ်နှစ်ပွဲ ကစားမလဲ? button နှိပ်ပြီး ရွေးပါ။`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buildCountButtons(available) },
+    }
+  ).catch(() => {});
+});
+
+bot.action(/^sch:c:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const count = parseInt(ctx.match[1], 10);
+  const w = scheduleWizard.get(ctx.from!.id) as any;
+  if (!w?.game || !w?.time) {
+    return renderScheduleMenu(ctx);
+  }
+  if (!Number.isFinite(count) || count < 1) {
+    return ctx.answerCbQuery('ပွဲအရေအတွက် မမှန်', { show_alert: true }).catch(() => {});
+  }
+  const job: GameSchedule = {
+    id: `${ctx.from!.id}_${w.game}_${Date.now()}`,
+    tgUserId: ctx.from!.id,
+    chatId: ctx.chat!.id,
+    game: w.game,
+    time: w.time,
+    count,
+    nextRunAt: nextRunIsoFromHHMM(w.time),
+    enabled: true,
+    createdAt: new Date().toISOString(),
+  };
+  await addSchedule(job);
+  scheduleWizard.delete(ctx.from!.id);
+  await ctx.editMessageText(
+    `✅ <b>Schedule သိမ်းပြီးပါပြီ</b> (တစ်ကြိမ်သာ)\n\n` +
+      `${GAME_LABELS[job.game]}\n` +
+      `🕐 အချိန်: <code>${job.time}</code> (MM)\n` +
+      `🎮 ပွဲ: <b>${job.count}</b>\n` +
+      `⏭ စတင်မည့်အချိန်: <code>${fmtMmTime(job.nextRunAt)}</code>\n\n` +
+      `ပြီးရင် schedule အလိုအလျောက် ပျက်ပါမယ်။\n` +
+      `နောက်နေ့ ထပ်ကစားချင်ရင် ပြန်သတ်မှတ်ပေးပါ။`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: '⏰ Schedule Menu', callback_data: 'sch:menu' }]],
+      },
+    }
+  ).catch(() => {});
+});
+
+bot.action('sch:menu', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  scheduleWizard.delete(ctx.from!.id);
+  await renderScheduleMenu(ctx);
+});
+
+bot.action('sch:list', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const list = await getUserSchedules(ctx.from!.id);
+  if (!list.length) {
+    return ctx.editMessageText('ℹ️ Schedule မရှိသေးပါ။', {
+      reply_markup: { inline_keyboard: [[{ text: '« နောက်သို့', callback_data: 'sch:menu' }]] },
+    }).catch(() => {});
+  }
+  let msg = `📋 <b>ကျွန်ုပ်၏ Schedules</b>\n\n`;
+  const rows: any[] = [];
+  list.forEach((s, i) => {
+    msg +=
+      `${i + 1}. ${GAME_LABELS[s.game]} · ${s.time} · ${s.count <= 0 ? '∞' : s.count}\n` +
+      `   ⏭ ${fmtMmTime(s.nextRunAt)}\n`;
+    rows.push([{ text: `🗑 ဖျက် ${i + 1}`, callback_data: `sch:del:${s.id}` }]);
+  });
+  rows.push([{ text: '« နောက်သို့', callback_data: 'sch:menu' }]);
+  await ctx.editMessageText(msg, {
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: rows },
+  }).catch(() => {});
+});
+
+bot.action(/^sch:del:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery('ဖျက်ပြီး').catch(() => {});
+  await removeSchedule(ctx.match[1], ctx.from!.id);
+  await renderScheduleMenu(ctx);
+});
+
+bot.action('sch:clear', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const list = await loadSchedules();
+  await saveSchedules(list.filter((x) => x.tgUserId !== ctx.from!.id));
+  scheduleWizard.delete(ctx.from!.id);
+  await ctx.editMessageText('✅ သင့် schedules အားလုံး ဖျက်ပြီးပါပြီ။', {
+    reply_markup: { inline_keyboard: [[{ text: '⏰ Schedule Menu', callback_data: 'sch:menu' }]] },
+  }).catch(() => {});
+});
+
+/** text HH:MM or count while in schedule wizard */
+bot.on('text', async (ctx, next) => {
+  const w = scheduleWizard.get(ctx.from?.id);
+  if (!w || !ctx.message || !('text' in ctx.message)) return next();
+  const text = String(ctx.message.text || '').trim();
+  if (text.startsWith('/') || text === '⏰ Auto Schedule') return next();
+
+  if (w.step === 'time') {
+    const p = parseHHMM(text);
+    if (!p) {
+      await ctx.reply('❌ အချိန် ပုံစံ: <code>17:00</code>', { parse_mode: 'HTML' });
+      return;
+    }
+    const time = `${String(p.h).padStart(2, '0')}:${String(p.m).padStart(2, '0')}`;
+    (w as any).time = time;
+    w.step = 'count';
+    scheduleWizard.set(ctx.from.id, w);
+    const available = await getAvailablePlayCount(ctx.from.id, w.game!);
+    if (available <= 0) {
+      await ctx.reply(
+        `❌ လက်ရှိ ကစားခွင့် မရှိသေးပါ။ ကူပွန်/turns ရပြီးမှ ထည့်ပါ။`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    await ctx.reply(
+      `✅ အချိန်: <code>${time}</code>\nလက်ကျန်: <b>${available}</b>\n\nဘယ်နှစ်ပွဲ? button နှိပ်ပါ။`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buildCountButtons(available) },
+      }
+    );
+    return;
+  }
+
+  if (w.step === 'count' && (w as any).time && w.game) {
+    const n = parseInt(text, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 50) {
+      await ctx.reply('❌ 1–50 ဂဏန်း ထည့်ပါ (သို့မဟုတ် button နှိပ်ပါ)');
+      return;
+    }
+    const job: GameSchedule = {
+      id: `${ctx.from.id}_${w.game}_${Date.now()}`,
+      tgUserId: ctx.from.id,
+      chatId: ctx.chat.id,
+      game: w.game,
+      time: (w as any).time,
+      count: n,
+      nextRunAt: nextRunIsoFromHHMM((w as any).time),
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+    await addSchedule(job);
+    scheduleWizard.delete(ctx.from.id);
+    await ctx.reply(
+      `✅ Schedule သိမ်းပြီး (တစ်ကြိမ်သာ)\n${GAME_LABELS[job.game]}\n🕐 ${job.time}\n🎮 ${n} ပွဲ\n⏭ ${fmtMmTime(job.nextRunAt)}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  return next();
+});
+
+// ==========================================
 // 🛠️ ADMIN PANEL (BULLETPROOF ROUTER EDITION)
 
 export function startBot() {
   bot.launch({ dropPendingUpdates: true }).then(() => {
     console.log("Telegram Bot started successfully!");
+    startScheduleTicker();
   }).catch(e => {
     console.error("Bot launch failed (Possible conflict with old chat instance):", e.message);
     const is409 = e.response && e.response.error_code === 409;
