@@ -3670,24 +3670,13 @@ function pe(id: string, fallback: string) {
 }
 
 /** Telegram button styles: primary=ပြာ, danger=နီ, success=အစိမ်း
- *  style = app အသစ် · 🔴🔵🟢 emoji = app အဟောင်းပါ မြင်ရအောင်
+ *  style သာ သုံး — 🔴🔵🟢 color circle emoji မထည့်
  */
 const BTN_STYLES = ['danger', 'primary', 'success'] as const;
-const BTN_EMOJI: Record<'danger' | 'primary' | 'success', string> = {
-  danger: '🔴',
-  primary: '🔵',
-  success: '🟢',
-};
 function btnStyle(index: number): 'danger' | 'primary' | 'success' {
   return BTN_STYLES[index % BTN_STYLES.length];
 }
-/** စာသားမှာ color circle မပါသေးရင် ရှေ့ကနေ ထည့် */
-function withColorEmoji(text: string, style: 'danger' | 'primary' | 'success'): string {
-  // ရှိပြီးသား အရောင်စက် မထပ် (🔵🟠 ပါပြီးသား home buttons စသည်)
-  if (/^[🔴🔵🟢🟠🟡🟣🟤⚪⚫]/u.test(text)) return text;
-  return `${BTN_EMOJI[style]} ${text}`;
-}
-/** Inline callback button — style + emoji (app အဟောင်း/အသစ်) */
+/** Inline callback button — color style only (emoji မပါ) */
 function coloredBtn(
   text: string,
   callback_data: string,
@@ -3696,16 +3685,16 @@ function coloredBtn(
 ): any {
   const style = fixedStyle || btnStyle(index);
   return {
-    text: withColorEmoji(text, style),
+    text,
     callback_data,
     style,
   };
 }
-/** Reply keyboard button — style + emoji (app အဟောင်း/အသစ်) */
+/** Reply keyboard button — color style only (emoji မပါ) */
 function kbBtn(text: string, index = 0, fixedStyle?: 'danger' | 'primary' | 'success'): any {
   const style = fixedStyle || btnStyle(index);
   return {
-    text: withColorEmoji(text, style),
+    text,
     style,
   };
 }
@@ -10160,16 +10149,31 @@ async function playOuGameRounds(
   };
 }
 
-async function playPirateOnce(tgUserId: number): Promise<{ ok: boolean; message: string }> {
+async function playPirateOnce(
+  tgUserId: number,
+  chatId?: number,
+  rounds = 1
+): Promise<{ ok: boolean; message: string }> {
   const my = await getMyIdSession(tgUserId);
   if (!my?.access_token) return { ok: false, message: 'MYTEL login မရှိ' };
   const { session: pirate, error } = await ensurePirateSession(tgUserId, my, true);
   if (!pirate) return { ok: false, message: error || 'Pirate ချိတ်မရ' };
   pirateStopFlags.set(tgUserId, false);
-  const result = await PirateWarService.autoBattle(pirate.gameToken, 15, async () => {});
+  // schedule အတွက် အများဆုံး levels = rounds (default 1 ပွဲ = 1 level စီးရီး မဟုတ် — autoBattle N levels)
+  // user count = ဘယ်နှစ်ပွဲ → maxLevels အဖြစ် သုံး
+  const maxLevels = Math.min(Math.max(rounds, 1), 15);
+  const result = await PirateWarService.autoBattle(
+    pirate.gameToken,
+    maxLevels,
+    async (msg) => {
+      if (chatId) {
+        await bot.telegram.sendMessage(chatId, String(msg).slice(0, 800)).catch(() => {});
+      }
+    }
+  );
   return {
-    ok: true,
-    message: `Pirate Auto Battle: ${result.win}W / ${result.fail}F${result.stopped ? ' (stopped)' : ''}`,
+    ok: result.win > 0 || result.fail > 0 || !result.stopped,
+    message: `Pirate: ${result.win}W / ${result.fail}F${result.stopped ? ' (stopped)' : ''}`,
   };
 }
 
@@ -10179,37 +10183,55 @@ async function runScheduleJob(job: GameSchedule) {
   let done = 0;
   let stopReason = '';
 
+  console.log(
+    `⏰ runScheduleJob start id=${job.id} game=${job.game} count=${targetCount} user=${job.tgUserId}`
+  );
+
   try {
     await bot.telegram.sendMessage(
       job.chatId,
       `⏰ <b>Auto Schedule စတင်ပါပြီ</b>\n` +
         `${GAME_LABELS[job.game]}\n` +
-        `ပွဲ: <b>${job.count <= 0 ? 'ကုန်သည်အထိ' : job.count}</b>`,
+        `📅 ${job.date ? formatScheduleDate(job.date) : '—'}\n` +
+        `🕐 ${formatScheduleTime(job.time)}\n` +
+        `ပွဲ: <b>${targetCount}</b>`,
       { parse_mode: 'HTML' }
     ).catch(() => {});
 
-    for (let i = 0; i < targetCount; i++) {
-      let r: { ok: boolean; message: string; prize?: string };
-      if (job.game === 'tohtoh') r = await playTohTohOnce(job.tgUserId);
-      else if (job.game === 'goldenfarm') r = await playGoldenFarmOnce(job.tgUserId);
-      else if (job.game === 'ougame') r = await playOuGameRounds(job.tgUserId, 1);
-      else r = await playPirateOnce(job.tgUserId);
-
-      if (!r.ok) {
-        stopReason = r.message;
-        break;
+    if (job.game === 'pirate') {
+      // Pirate — count = level အရေအတွက် တစ်ခါတည်း autoBattle
+      const r = await playPirateOnce(job.tgUserId, job.chatId, targetCount);
+      if (!r.ok) stopReason = r.message;
+      else {
+        done = targetCount;
+        lines.push(r.message);
       }
-      done++;
-      lines.push(`${done}. ${r.message}`);
-      // cooldown between ATOM plays
-      if (job.game === 'tohtoh' || job.game === 'goldenfarm') {
-        await new Promise((res) => setTimeout(res, 3500));
-      } else if (job.game === 'ougame') {
-        await new Promise((res) => setTimeout(res, 1500));
+    } else {
+      for (let i = 0; i < targetCount; i++) {
+        let r: { ok: boolean; message: string; prize?: string };
+        if (job.game === 'tohtoh') r = await playTohTohOnce(job.tgUserId);
+        else if (job.game === 'goldenfarm') r = await playGoldenFarmOnce(job.tgUserId);
+        else r = await playOuGameRounds(job.tgUserId, 1);
+
+        if (!r.ok) {
+          stopReason = r.message;
+          break;
+        }
+        done++;
+        lines.push(`${done}. ${r.message}`);
+        await bot.telegram
+          .sendMessage(job.chatId, `${done}. ${r.message}`.slice(0, 800))
+          .catch(() => {});
+        if (job.game === 'tohtoh' || job.game === 'goldenfarm') {
+          await new Promise((res) => setTimeout(res, 3500));
+        } else {
+          await new Promise((res) => setTimeout(res, 1500));
+        }
       }
     }
   } catch (e: any) {
     stopReason = e?.message || String(e);
+    console.error('runScheduleJob error', e);
   }
 
   let summary =
@@ -10220,10 +10242,7 @@ async function runScheduleJob(job: GameSchedule) {
   if (lines.length) summary += `\n` + lines.slice(0, 15).map((l) => escapeHtml(l)).join('\n');
 
   await bot.telegram.sendMessage(job.chatId, summary, { parse_mode: 'HTML' }).catch(() => {});
-
-  // တစ်ကြိမ်သာ — ပြီးရင် schedule ဖျက် (နေ့တိုင်း auto မလုပ်)
-  const list = await loadSchedules();
-  await saveSchedules(list.filter((x) => x.id !== job.id));
+  console.log(`⏰ runScheduleJob done id=${job.id} done=${done} stop=${stopReason || '-'}`);
 }
 
 let scheduleTickerRunning = false;
@@ -10241,16 +10260,25 @@ async function scheduleTick() {
         continue;
       }
       const t = new Date(job.nextRunAt).getTime();
-      if (!Number.isFinite(t) || t > now) {
+      if (!Number.isFinite(t)) {
+        console.warn('⏰ invalid nextRunAt', job.id, job.nextRunAt);
+        remain.push(job);
+        continue;
+      }
+      if (t > now) {
         remain.push(job);
         continue;
       }
       // due — remove from list first (one-shot) to avoid double fire
+      console.log(
+        `⏰ DUE job=${job.id} game=${job.game} nextRunAt=${job.nextRunAt} now=${new Date(now).toISOString()}`
+      );
       due.push(job);
     }
     if (due.length) {
       await saveSchedules(remain);
       for (const job of due) {
+        // job ပြီးရင် list ထဲ မရှိတော့ — runScheduleJob က ဖျက်စရာ မလို
         runScheduleJob(job).catch((e) => console.error('schedule job error', e));
       }
     }
@@ -10344,10 +10372,15 @@ function buildTimeButtons(): any[][] {
 }
 
 function startScheduleTicker() {
+  // ချက်ချင်း တစ်ခါ စစ်
+  scheduleTick().catch((e) => console.error(e));
   setInterval(() => {
     scheduleTick().catch(() => {});
-  }, 20_000);
-  console.log('⏰ Game schedule ticker started (20s)');
+  }, 10_000);
+  // restart ပြီး ခဏအကြာ ထပ်စစ်
+  setTimeout(() => scheduleTick().catch(() => {}), 5000);
+  setTimeout(() => scheduleTick().catch(() => {}), 15000);
+  console.log('⏰ Game schedule ticker started (10s)');
 }
 
 async function renderScheduleMenu(ctx: any) {
@@ -10774,10 +10807,69 @@ bot.on('text', async (ctx, next) => {
 // ==========================================
 // 🛠️ ADMIN PANEL (BULLETPROOF ROUTER EDITION)
 
+/** Bot စတင်တိုင်း /start နှိပ်ဖူးသူအားလုံးဆီ update စာ ပို့ */
+async function notifyUsersBotUpdated() {
+  try {
+    const db = await getDb();
+    const users = Object.keys(db.users || {});
+    if (!users.length) {
+      console.log('📢 Update notify: user မရှိသေး');
+      return;
+    }
+
+    // တူညီ restart spam မဖြစ်အောင် — နောက်ဆုံး notify က ၃ နာရီ မပြည့်ရင် ကျော်
+    const last = db.lastUpdateNotifyAt ? new Date(db.lastUpdateNotifyAt).getTime() : 0;
+    if (Date.now() - last < 3 * 60 * 60 * 1000) {
+      console.log('📢 Update notify: ၃ နာရီအတွင်း ပို့ပြီးသား — ကျော်လိုက်ပါပြီ');
+      return;
+    }
+    db.lastUpdateNotifyAt = new Date().toISOString();
+    await saveDb(db);
+
+    const text =
+      `🔔 <b>Bot Update</b>\n` +
+      `════════════════════\n\n` +
+      `✅ Bot ကို <b>Update</b> လုပ်ပြီးပါပြီ။\n\n` +
+      `🆕 <b>အသစ်ပါဝင်သည်များ</b>\n` +
+      `├ ⏰ Auto Schedule (ရက် + အချိန် သတ်မှတ်ပြီး auto ကစား)\n` +
+      `├ 📅 ပြက္ခဒိန် — ဒီနေ့ အပါအဝင် ရက်ရွေးလို့ရ\n` +
+      `├ 🎮 Toh Toh · ရွှေလယ်တော · OU Game · Pirate War\n` +
+      `├ ⛵ Pirate War — ပွဲရလဒ် တစ်ကြောင်းချင်း\n` +
+      `└ 🎁 1GB+ ဆု — Admin / Channel Noti\n\n` +
+      `👉 <b>/start</b> နှိပ်ပြီး ပြန်သုံးနိုင်ပါတယ်။`;
+
+    let ok = 0;
+    let fail = 0;
+    for (const id of users) {
+      const u = db.users[id];
+      if (u?.banned) continue;
+      try {
+        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' });
+        ok++;
+      } catch {
+        fail++;
+      }
+      // flood မဖြစ်အောင်
+      if ((ok + fail) % 25 === 0) {
+        await new Promise((r) => setTimeout(r, 1000));
+      } else {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    console.log(`📢 Update notify ပြီး: success=${ok} fail=${fail}`);
+  } catch (e) {
+    console.error('notifyUsersBotUpdated error', e);
+  }
+}
+
 export function startBot() {
   bot.launch({ dropPendingUpdates: true }).then(() => {
     console.log("Telegram Bot started successfully!");
     startScheduleTicker();
+    // /start နှိပ်ဖူးသူအားလုံးဆီ update စာ
+    setTimeout(() => {
+      notifyUsersBotUpdated().catch((e) => console.error(e));
+    }, 3000);
   }).catch(e => {
     console.error("Bot launch failed (Possible conflict with old chat instance):", e.message);
     const is409 = e.response && e.response.error_code === 409;
