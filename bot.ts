@@ -1746,7 +1746,7 @@ class PirateWarService {
     return { ok: false, error: lastUpdateErr || 'update-result failed' };
   }
 
-  /** Auto battle levels 1→N (default 10 for telegram speed; can be higher) */
+  /** Auto battle levels 1→N — တစ်ပွဲချင်း log (HelloKitty style) */
   static async autoBattle(
     gameToken: string,
     maxLevels = 15,
@@ -1758,13 +1758,14 @@ class PirateWarService {
       logs.push(m);
       if (onLog) await onLog(m).catch(() => {});
     };
+    // pveChapter အတွင်း detail log မပို့ — ပွဲတိုင်း start/result ပဲ ပို့
+    const silent = async (_m: string) => {};
 
     const lineup = await this.getLineup(gameToken);
     if (!lineup.ok) {
       await log(`❌ ${lineup.message}`);
       return { win: 0, fail: 0, logs, stopped: false };
     }
-    await log(`✅ Ships: ${lineup.shipIds.length}`);
 
     const mapResp = await this.post(gameToken, 'pve/map-chapters', { mapId: 1 });
     if (mapResp?.errorCode !== 0) {
@@ -1775,50 +1776,66 @@ class PirateWarService {
       .filter((c: any) => c.index >= 1 && c.index <= maxLevels)
       .sort((a: any, b: any) => a.index - b.index);
 
+    const total = chapters.length || maxLevels;
     let win = 0;
     let fail = 0;
     let stopped = false;
+    let matchNo = 0;
+
     for (const ch of chapters) {
       if (shouldStop && shouldStop()) {
         stopped = true;
         await log('🛑 User က ရပ်လိုက်ပါသည်');
         break;
       }
-      const energyCost = ch.energyConsumed || 5;
-      await log(`⚔️ ${ch.name || 'Level ' + ch.index} (⚡-${energyCost})`);
+
+      matchNo++;
+      const levelLabel = ch.index || matchNo;
+      // 🔄 ပွဲ (n/total) စတင်နေပါပြီ...
+      await log(`🔄 ပွဲ (${matchNo}/${total}) စတင်နေပါပြီ...`);
+
       const result = await this.pveChapter(
         gameToken,
         ch.id,
         lineup.shipIds,
-        log
+        silent
       );
+
       if (result.ok) {
         win++;
-        const island = result.data?.island || {};
+        // ✅ ပွဲ (n) Level X အထိ အောင်မြင်စွာ တိုက်ပွဲနိုင်ပါပြီ။
         await log(
-          `✅ WIN ★${result.data?.star || 3} | ⚡${island.energy ?? '?'} 💰${this.fmt(island.PVG || 0)}`
+          `✅ ပွဲ (${matchNo}) Level ${levelLabel} အထိ အောင်မြင်စွာ တိုက်ပွဲနိုင်ပါပြီ။`
         );
       } else {
         fail++;
-        await log(`❌ Fail: ${result.error}`);
+        await log(
+          `❌ ပွဲ (${matchNo}) Level ${levelLabel} မအောင်မြင်ပါ။\n` +
+            `${result.error || ''}`.slice(0, 120)
+        );
         if (result.fatal) {
-          await log('⛔ Energy ကုန် — ရပ်မည်');
+          await log('⛔ Energy ကုန်သွားပါပြီ — ရပ်လိုက်ပါမယ်။');
           break;
         }
-        // 9016 skip level and continue; other errors continue too
       }
+
       if (shouldStop && shouldStop()) {
         stopped = true;
         await log('🛑 User က ရပ်လိုက်ပါသည်');
         break;
       }
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 800));
     }
-    await log(
-      stopped
-        ? `🛑 ရပ်လိုက်ပါပြီ: ${win} win / ${fail} fail`
-        : `🏁 Done: ${win} win / ${fail} fail`
-    );
+
+    if (stopped) {
+      await log(
+        `🛑 ရပ်လိုက်ပါပြီ!\n` +
+          `အောင်မြင်: ${win} ပွဲ · မအောင်မြင်: ${fail} ပွဲ`
+      );
+    } else {
+      // 🎉 ရွှေပင် (n) ပွဲလုံး ကစားပြီး ပြီဆုံးပါပြီ!
+      await log(`🎉 ရွှေပင် (${win}) ပွဲလုံး ကစားပြီး ပြီဆုံးပါပြီ!`);
+    }
     return { win, fail, logs, stopped };
   }
 
@@ -6173,110 +6190,47 @@ bot.hears('⚔️ Auto Battle', async (ctx) => {
   pirateStopFlags.set(ctx.from.id, false);
 
   await ctx.reply(
-    `${pe(PE.kiki, '⚔️')} <b>Auto Battle စတင်ပါပြီ</b>\n` +
-    `════════════════════\n\n` +
-    `${pe(PE.chart, '🎮')} Level <b>1 → 15</b>\n\n` +
-    `${pe(PE.notification, '🛑')} ရပ်ချင်ရင် <b>🛑 ရပ်မယ်</b> ကို နှိပ်ပါ။`,
+    `⚔️ <b>Auto Battle စတင်ပါပြီ</b>\n` +
+      `Level 1 → 15\n` +
+      `ရပ်ချင်ရင် <b>🛑 ရပ်မယ်</b> ကို နှိပ်ပါ။`,
     {
       parse_mode: 'HTML',
       ...getPirateWarKeyboard(true),
     }
   );
 
-  const status = await ctx.reply(
-    `${pe(PE.loading, '⚔️')} <b>Battle log...</b>\n\n` +
-    `ခဏစောင့်ပါ။`,
-    { parse_mode: 'HTML' }
-  );
-
   try {
-    const liveLogs: string[] = [];
-    let lastEdit = Date.now();
-
+    let lastSend = 0;
     const result = await PirateWarService.autoBattle(
       pirate.gameToken,
       15,
       async (msg) => {
-        liveLogs.push(msg);
-
-        if (Date.now() - lastEdit < 1500) return;
-
-        lastEdit = Date.now();
-
-        const tail = liveLogs
-          .slice(-8)
-          .join('\n')
-          .slice(0, 3500);
-
-        await ctx.telegram
-          .editMessageText(
-            ctx.chat!.id,
-            status.message_id,
-            undefined,
-            `${pe(PE.kiki, '⚔️')} <b>Auto Battle</b>\n\n` +
-            `${tail}`,
-            {
-              parse_mode: 'HTML',
-            }
-          )
-          .catch(() => {});
+        // တစ်ကြောင်းချင်း message
+        const wait = 350 - (Date.now() - lastSend);
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        lastSend = Date.now();
+        await ctx.reply(String(msg).slice(0, 800)).catch(() => {});
       },
       () => pirateStopFlags.get(ctx.from.id) === true
     );
 
     pirateStopFlags.set(ctx.from.id, false);
 
-    const title = result.stopped
-      ? `${pe(PE.notification, '🛑')} Auto Battle ရပ်လိုက်ပါပြီ`
-      : `${pe(PE.check, '⛵')} Auto Battle ပြီးပါပြီ`;
+    // နောက်ဆုံး summary ကို autoBattle log ထဲမှာပဲ ပို့ပြီးသား — keyboard ပြန်ပေး
+    await ctx.reply(`⛵ Pirate War Menu`, {
+      ...getPirateWarKeyboard(false),
+    }).catch(() => {});
 
-    const summary =
-      `<b>${title}</b>\n` +
-      `════════════════════\n\n` +
-      `${pe(PE.check, '✅')} Win: <b>${result.win}</b>\n` +
-      `${pe(PE.notification, '❌')} Fail: <b>${result.fail}</b>\n\n` +
-      `${result.logs
-        .slice(-12)
-        .join('\n')
-        .slice(0, 3000)}`;
-
-    await ctx.telegram
-      .editMessageText(
-        ctx.chat!.id,
-        status.message_id,
-        undefined,
-        summary,
-        {
-          parse_mode: 'HTML',
-        }
-      )
-      .catch(async () => {
-        await ctx.reply(summary, {
-          parse_mode: 'HTML',
-        });
-      });
-
-    await ctx.reply(
-      `${pe(PE.kiki, '⛵')} <b>Pirate War Menu</b>`,
-      {
-        parse_mode: 'HTML',
-        ...getPirateWarKeyboard(false),
-      }
-    );
+    // win/fail က final log မှာ ပါပြီး — ဒီမှာ ထပ်မပို့
+    void result;
   } catch (e: any) {
     pirateStopFlags.set(ctx.from.id, false);
-
     await ctx.reply(
-      `${pe(PE.notification, '❌')} <b>Battle Error</b>\n\n` +
-      `${e?.message || e}`,
-      {
-        parse_mode: 'HTML',
-        ...getPirateWarKeyboard(false),
-      }
-    );
+      `❌ ${String(e?.message || e).slice(0, 200)}`,
+      { ...getPirateWarKeyboard(false) }
+    ).catch(() => {});
   }
 });
-
 
 // ============================================================
 // Stop Auto Battle
@@ -9871,6 +9825,8 @@ interface GameSchedule {
   tgUserId: number;
   chatId: number;
   game: GameScheduleType;
+  /** YYYY-MM-DD Myanmar date */
+  date?: string;
   /** HH:MM Myanmar time */
   time: string;
   /** how many plays; 0 = until no coupon/turns left (max 50 safety) */
@@ -9883,7 +9839,16 @@ interface GameSchedule {
 
 const scheduleWizard = new Map<
   number,
-  { step: 'game' | 'time' | 'minute' | 'count'; game?: GameScheduleType; hour?: number; time?: string }
+  {
+    step: 'game' | 'date' | 'time' | 'minute' | 'count';
+    game?: GameScheduleType;
+    /** YYYY-MM-DD */
+    date?: string;
+    hour?: number;
+    time?: string;
+    /** calendar month cursor YYYY-MM */
+    calMonth?: string;
+  }
 >();
 
 const GAME_LABELS: Record<GameScheduleType, string> = {
@@ -9898,15 +9863,33 @@ function mmNowDate(): Date {
 }
 
 function parseHHMM(s: string): { h: number; m: number } | null {
-  const m = String(s).trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) return null;
-  const h = parseInt(m[1], 10);
-  const min = parseInt(m[2], 10);
-  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-  return { h, m: min };
+  const raw = String(s).trim();
+  // "17:30" သို့မဟုတ် "17" သို့မဟုတ် "6"
+  let m = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) {
+    const h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+    return { h, m: min };
+  }
+  m = raw.match(/^(\d{1,2})$/);
+  if (m) {
+    const h = parseInt(m[1], 10);
+    if (h < 0 || h > 23) return null;
+    return { h, m: 0 };
+  }
+  return null;
 }
 
-/** next occurrence of HH:MM in Myanmar time → UTC ISO */
+/** ပြသရန်: 17:00 → "17" · 17:30 → "17:30" */
+function formatScheduleTime(time: string): string {
+  const p = parseHHMM(time);
+  if (!p) return time;
+  if (p.m === 0) return String(p.h);
+  return `${p.h}:${String(p.m).padStart(2, '0')}`;
+}
+
+/** next occurrence of HH:MM in Myanmar time → UTC ISO (ရက်မပါရင် နောက်ဆုံးအချိန်) */
 function nextRunIsoFromHHMM(time: string): string {
   const p = parseHHMM(time);
   if (!p) return new Date().toISOString();
@@ -9916,8 +9899,32 @@ function nextRunIsoFromHHMM(time: string): string {
   if (target.getTime() <= now.getTime() + 30_000) {
     target.setUTCDate(target.getUTCDate() + 1);
   }
-  // convert MM wall-clock back to real UTC
   return new Date(target.getTime() - 7 * 60 * 60 * 1000).toISOString();
+}
+
+/** သတ်မှတ် ရက် (YYYY-MM-DD) + အချိန် (HH:MM) → UTC ISO */
+function runIsoFromDateAndTime(dateYmd: string, time: string): string | null {
+  const p = parseHHMM(time);
+  if (!p) return null;
+  const dm = String(dateYmd).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!dm) return null;
+  const y = parseInt(dm[1], 10);
+  const mo = parseInt(dm[2], 10);
+  const d = parseInt(dm[3], 10);
+  // MM wall-clock as UTC components then subtract 7h
+  const target = new Date(Date.UTC(y, mo - 1, d, p.h, p.m, 0, 0));
+  return new Date(target.getTime() - 7 * 60 * 60 * 1000).toISOString();
+}
+
+function mmTodayYmd(): string {
+  const n = mmNowDate();
+  return `${n.getUTCFullYear()}-${String(n.getUTCMonth() + 1).padStart(2, '0')}-${String(n.getUTCDate()).padStart(2, '0')}`;
+}
+
+function formatScheduleDate(ymd: string): string {
+  const m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return ymd;
+  return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
 function fmtMmTime(iso: string): string {
@@ -9928,6 +9935,77 @@ function fmtMmTime(iso: string): string {
   const hh = String(d.getUTCHours()).padStart(2, '0');
   const mi = String(d.getUTCMinutes()).padStart(2, '0');
   return `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
+}
+
+/** ပြက္ခဒိန် keyboard — ဒီလ / နောက်လ · ဒီနေ့ ရွေးလို့ရ */
+function buildCalendarButtons(calMonth: string): any[][] {
+  const mm = String(calMonth).match(/^(\d{4})-(\d{2})$/);
+  const now = mmNowDate();
+  let year = now.getUTCFullYear();
+  let month = now.getUTCMonth(); // 0-based
+  if (mm) {
+    year = parseInt(mm[1], 10);
+    month = parseInt(mm[2], 10) - 1;
+  }
+  const todayYmd = mmTodayYmd();
+  const monthLabel = `${year}-${String(month + 1).padStart(2, '0')}`;
+
+  // prev / next month
+  const prev = new Date(Date.UTC(year, month - 1, 1));
+  const next = new Date(Date.UTC(year, month + 1, 1));
+  const prevKey = `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
+  const nextKey = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  const rows: any[][] = [];
+  rows.push([
+    coloredBtn('◀️', `sch:cal:${prevKey}`, 0, 'primary'),
+    { text: `📅 ${month + 1}/${year}`, callback_data: 'sch:noop' },
+    coloredBtn('▶️', `sch:cal:${nextKey}`, 0, 'primary'),
+  ]);
+  rows.push([
+    { text: 'တန', callback_data: 'sch:noop' },
+    { text: 'အင်္ဂါ', callback_data: 'sch:noop' },
+    { text: 'ဗုဒ္ဓ', callback_data: 'sch:noop' },
+    { text: 'ကြာသပ', callback_data: 'sch:noop' },
+    { text: 'သော', callback_data: 'sch:noop' },
+    { text: 'နေ', callback_data: 'sch:noop' },
+    { text: 'တနင်္ဂ', callback_data: 'sch:noop' },
+  ]);
+
+  // first day of month weekday (Mon=0 ... Sun=6 for Myanmar-friendly — use Sun=0 JS style)
+  const first = new Date(Date.UTC(year, month, 1));
+  // JS getUTCDay: 0=Sun ... 6=Sat — pad with empty
+  let startPad = first.getUTCDay(); // Sunday first
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+
+  let row: any[] = [];
+  for (let i = 0; i < startPad; i++) {
+    row.push({ text: '·', callback_data: 'sch:noop' });
+  }
+  for (let day = 1; day <= daysInMonth; day++) {
+    const ymd = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const isPast = ymd < todayYmd;
+    const isToday = ymd === todayYmd;
+    if (isPast) {
+      row.push({ text: `·${day}`, callback_data: 'sch:noop' });
+    } else if (isToday) {
+      row.push(coloredBtn(`✅${day}`, `sch:day:${ymd}`, day, 'success'));
+    } else {
+      row.push(coloredBtn(String(day), `sch:day:${ymd}`, day));
+    }
+    if (row.length === 7) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length) {
+    while (row.length < 7) row.push({ text: '·', callback_data: 'sch:noop' });
+    rows.push(row);
+  }
+
+  rows.push([coloredBtn('📅 ဒီနေ့', `sch:day:${todayYmd}`, 0, 'success')]);
+  rows.push([coloredBtn('« နောက်သို့', 'sch:menu', 0, 'primary')]);
+  return rows;
 }
 
 async function loadSchedules(): Promise<GameSchedule[]> {
@@ -10248,12 +10326,13 @@ function buildCountButtons(available: number): any[][] {
 }
 
 function buildTimeButtons(): any[][] {
-  // 00:00 – 23:00 အားလုံး · နီ / ပြာ / အစိမ်း ဝေခြမ်း
+  // 0 – 23 နာရီ · button မှာ :00 မပါ · နီ/ပြာ/အစိမ်း
   const rows: any[][] = [];
   let row: any[] = [];
   for (let h = 0; h <= 23; h++) {
-    const t = `${String(h).padStart(2, '0')}:00`;
-    row.push(coloredBtn(t, `sch:t:${t}`, h));
+    const callbackTime = `${String(h).padStart(2, '0')}:00`;
+    // ပြသရန်: 6, 17 (leading zero / :00 မပါ)
+    row.push(coloredBtn(String(h), `sch:t:${callbackTime}`, h));
     if (row.length === 6) {
       rows.push(row);
       row = [];
@@ -10286,7 +10365,7 @@ async function renderScheduleMenu(ctx: any) {
     list.forEach((s, i) => {
       msg +=
         `${i + 1}. ${GAME_LABELS[s.game]}\n` +
-        `   🕐 ${s.time} · <b>${s.count}</b> ပွဲ\n` +
+        `   📅 ${s.date ? formatScheduleDate(s.date) : '—'} · 🕐 ${formatScheduleTime(s.time)} · <b>${s.count}</b> ပွဲ\n` +
         `   ⏭ ${fmtMmTime(s.nextRunAt)}\n`;
     });
   }
@@ -10335,20 +10414,71 @@ bot.action(/^sch:new:(tohtoh|goldenfarm|ougame|pirate)$/, async (ctx) => {
       return ctx.reply('❌ MYTEL login လုပ်ပြီးမှ schedule ထည့်ပါ။', { parse_mode: 'HTML' });
     }
   }
-  scheduleWizard.set(ctx.from!.id, { step: 'time', game });
+  const now = mmNowDate();
+  const calMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+  scheduleWizard.set(ctx.from!.id, { step: 'date', game, calMonth });
   await ctx.editMessageText(
     `⏰ <b>${GAME_LABELS[game]}</b>\n\n` +
+      `📅 <b>ရက်</b> ကို ပြက္ခဒိန်က ရွေးပါ။\n` +
+      `(မြန်မာစံတော်ချိန်)\n\n` +
+      `✅ = <b>ဒီနေ့</b> (ဒီနေ့ အချိန်သတ်မှတ်ပြီး ကစားလို့ရပါတယ်)\n` +
+      `· = ပြီးသွားသော ရက် (ရွေးမရ)\n\n` +
+      `ရက်ရွေးပြီးမှ နာရီ သတ်မှတ်ပါမယ်။`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buildCalendarButtons(calMonth) },
+    }
+  ).catch(() => {});
+});
+
+bot.action('sch:noop', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+bot.action(/^sch:cal:(\d{4}-\d{2})$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const calMonth = ctx.match[1];
+  const w = scheduleWizard.get(ctx.from!.id);
+  if (!w?.game) return renderScheduleMenu(ctx);
+  w.calMonth = calMonth;
+  w.step = 'date';
+  scheduleWizard.set(ctx.from!.id, w);
+  await ctx.editMessageText(
+    `⏰ <b>${GAME_LABELS[w.game]}</b>\n\n` +
+      `📅 <b>ရက်</b> ကို ပြက္ခဒိန်က ရွေးပါ။\n` +
+      `✅ = ဒီနေ့`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buildCalendarButtons(calMonth) },
+    }
+  ).catch(() => {});
+});
+
+bot.action(/^sch:day:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const dateYmd = ctx.match[1];
+  const w = scheduleWizard.get(ctx.from!.id);
+  if (!w?.game) return renderScheduleMenu(ctx);
+  if (dateYmd < mmTodayYmd()) {
+    return ctx.answerCbQuery('ပြီးသွားသော ရက် မရွေးနိုင်ပါ', { show_alert: true }).catch(() => {});
+  }
+  w.date = dateYmd;
+  w.step = 'time';
+  scheduleWizard.set(ctx.from!.id, w);
+  const isToday = dateYmd === mmTodayYmd();
+  await ctx.editMessageText(
+    `⏰ <b>${GAME_LABELS[w.game]}</b>\n` +
+      `📅 ရက်: <b>${formatScheduleDate(dateYmd)}</b>${isToday ? ' (ဒီနေ့)' : ''}\n\n` +
       `စတင်မယ့် <b>နာရီ</b> ကို button နှိပ်ပြီး ရွေးပါ။\n` +
       `(မြန်မာစံတော်ချိန်)\n\n` +
       `📖 <b>အချိန် ရှင်းပြချက်</b>\n` +
-      `├ <code>00:00 – 05:00</code> → ည / မနက်ဦး\n` +
-      `├ <code>06:00 – 11:00</code> → မနက်\n` +
-      `├ <code>12:00 – 16:00</code> → နေ့လည် / ညနေဦး\n` +
-      `├ <code>17:00 – 19:00</code> → ညနေ\n` +
-      `└ <code>20:00 – 23:00</code> → ည\n\n` +
-      `ဥပမာ: <code>17:00</code> = ညနေ ၅ နာရီ\n` +
-      `ဥပမာ: <code>21:00</code> = ည ၉ နာရီ\n\n` +
-      `သို့မဟုတ် <code>HH:MM</code> ပုံစံ ရိုက်ပို့နိုင်ပါတယ်။`,
+      `├ <code>0 – 5</code> → ည / မနက်ဦး\n` +
+      `├ <code>6 – 11</code> → မနက်\n` +
+      `├ <code>12 – 16</code> → နေ့လည် / ညနေဦး\n` +
+      `├ <code>17 – 19</code> → ညနေ\n` +
+      `└ <code>20 – 23</code> → ည\n\n` +
+      `ဥပမာ: <code>17</code> = ညနေ ၅ နာရီ\n` +
+      `ဥပမာ: <code>21</code> = ည ၉ နာရီ`,
     {
       parse_mode: 'HTML',
       reply_markup: { inline_keyboard: buildTimeButtons() },
@@ -10357,7 +10487,11 @@ bot.action(/^sch:new:(tohtoh|goldenfarm|ougame|pirate)$/, async (ctx) => {
 });
 
 /** နာရီ+မိနစ် သတ်မှတ်ပြီး ပွဲအရေ ရွေးသို့ သွား */
-async function goToCountStep(ctx: any, w: { game: GameScheduleType; time: string }, edit = true) {
+async function goToCountStep(
+  ctx: any,
+  w: { game: GameScheduleType; time: string; date?: string },
+  edit = true
+) {
   const available = await getAvailablePlayCount(ctx.from!.id, w.game);
   if (available <= 0) {
     const msg =
@@ -10373,8 +10507,13 @@ async function goToCountStep(ctx: any, w: { game: GameScheduleType; time: string
     return;
   }
 
+  const datePart = w.date
+    ? `📅 ${formatScheduleDate(w.date)}${w.date === mmTodayYmd() ? ' (ဒီနေ့)' : ''}\n`
+    : '';
   const msg =
-    `⏰ <b>${GAME_LABELS[w.game]}</b> · <code>${w.time}</code>\n\n` +
+    `⏰ <b>${GAME_LABELS[w.game]}</b>\n` +
+    datePart +
+    `🕐 <code>${formatScheduleTime(w.time)}</code>\n\n` +
     `လက်ကျန်: <b>${available}</b> ကြိမ်\n\n` +
     `ဘယ်နှစ်ပွဲ ကစားမလဲ? button နှိပ်ပြီး ရွေးပါ။`;
   const kb = { inline_keyboard: buildCountButtons(available) };
@@ -10397,18 +10536,17 @@ bot.action(/^sch:t:(\d{2}):(\d{2})$/, async (ctx) => {
   w.time = undefined;
   scheduleWizard.set(ctx.from!.id, w);
 
-  const hourStr = String(hour).padStart(2, '0');
   await ctx.editMessageText(
     `⏰ <b>${GAME_LABELS[w.game]}</b>\n` +
-      `🕐 နာရီ: <b>${hourStr}:00</b>\n\n` +
+      `🕐 နာရီ: <b>${hour}</b>\n\n` +
       `━━━━━━━━━━━━━━━━\n` +
       `❓ <b>မိနစ် သတ်မှတ်ချင်ပါသလား?</b>\n\n` +
       `✅ သတ်မှတ်မည် ဆိုပါက\n` +
       ` <code>1</code> မှ <code>59</code> အတွင်း နံပါတ် တစ်ခု ပို့ပါ။\n` +
-      ` ဥပမာ: <code>30</code> → <b>${hourStr}:30</b>\n\n` +
+      ` ဥပမာ: <code>30</code> → <b>${hour}:30</b>\n\n` +
       `➡️ မသတ်မှတ်ချင်ပါက\n` +
       ` အောက်က <b>ဆက်လုပ်မည်</b> ကို နှိပ်ပါ။\n` +
-      ` (<b>${hourStr}:00</b> အတိုင်း ဆက်လုပ်မည်)\n` +
+      ` (<b>${hour}</b> နာရီ အတိုင်း ဆက်လုပ်မည်)\n` +
       `━━━━━━━━━━━━━━━━`,
     {
       parse_mode: 'HTML',
@@ -10429,10 +10567,20 @@ bot.action('sch:min:skip', async (ctx) => {
     return renderScheduleMenu(ctx);
   }
   const time = `${String(w.hour).padStart(2, '0')}:00`;
+  // ဒီနေ့ + ပြီးသွားသော အချိန် စစ်
+  if (w.date === mmTodayYmd()) {
+    const iso = runIsoFromDateAndTime(w.date, time);
+    if (iso && new Date(iso).getTime() <= Date.now() + 30_000) {
+      await ctx.answerCbQuery('ဒီအချိန် ပြီးသွားပါပြီ — နောက်အချိန် ရွေးပါ', {
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+  }
   w.step = 'count';
   w.time = time;
   scheduleWizard.set(ctx.from!.id, w);
-  await goToCountStep(ctx, { game: w.game, time }, true);
+  await goToCountStep(ctx, { game: w.game, time, date: w.date }, true);
 });
 
 bot.action(/^sch:c:(\d+)$/, async (ctx) => {
@@ -10445,14 +10593,23 @@ bot.action(/^sch:c:(\d+)$/, async (ctx) => {
   if (!Number.isFinite(count) || count < 1) {
     return ctx.answerCbQuery('ပွဲအရေအတွက် မမှန်', { show_alert: true }).catch(() => {});
   }
+  const dateYmd = w.date || mmTodayYmd();
+  let nextRunAt = runIsoFromDateAndTime(dateYmd, w.time);
+  if (!nextRunAt) nextRunAt = nextRunIsoFromHHMM(w.time);
+  if (new Date(nextRunAt).getTime() <= Date.now() + 30_000) {
+    return ctx.answerCbQuery('ဒီရက်/အချိန် ပြီးသွားပါပြီ — ပြန်ရွေးပါ', {
+      show_alert: true,
+    }).catch(() => {});
+  }
   const job: GameSchedule = {
     id: `${ctx.from!.id}_${w.game}_${Date.now()}`,
     tgUserId: ctx.from!.id,
     chatId: ctx.chat!.id,
     game: w.game,
+    date: dateYmd,
     time: w.time,
     count,
-    nextRunAt: nextRunIsoFromHHMM(w.time),
+    nextRunAt,
     enabled: true,
     createdAt: new Date().toISOString(),
   };
@@ -10461,11 +10618,11 @@ bot.action(/^sch:c:(\d+)$/, async (ctx) => {
   await ctx.editMessageText(
     `✅ <b>Schedule သိမ်းပြီးပါပြီ</b> (တစ်ကြိမ်သာ)\n\n` +
       `${GAME_LABELS[job.game]}\n` +
-      `🕐 အချိန်: <code>${job.time}</code> (MM)\n` +
+      `📅 ရက်: <code>${formatScheduleDate(dateYmd)}</code>${dateYmd === mmTodayYmd() ? ' (ဒီနေ့)' : ''}\n` +
+      `🕐 အချိန်: <code>${formatScheduleTime(job.time)}</code>\n` +
       `🎮 ပွဲ: <b>${job.count}</b>\n` +
       `⏭ စတင်မည့်အချိန်: <code>${fmtMmTime(job.nextRunAt)}</code>\n\n` +
-      `ပြီးရင် schedule အလိုအလျောက် ပျက်ပါမယ်။\n` +
-      `နောက်နေ့ ထပ်ကစားချင်ရင် ပြန်သတ်မှတ်ပေးပါ။`,
+      `ပြီးရင် schedule အလိုအလျောက် ပျက်ပါမယ်။`,
     {
       parse_mode: 'HTML',
       reply_markup: {
@@ -10493,7 +10650,7 @@ bot.action('sch:list', async (ctx) => {
   const rows: any[] = [];
   list.forEach((s, i) => {
     msg +=
-      `${i + 1}. ${GAME_LABELS[s.game]} · ${s.time} · ${s.count}\n` +
+      `${i + 1}. ${GAME_LABELS[s.game]} · 📅 ${s.date ? formatScheduleDate(s.date) : '—'} · 🕐 ${formatScheduleTime(s.time)} · ${s.count}\n` +
       `   ⏭ ${fmtMmTime(s.nextRunAt)}\n`;
     rows.push([coloredBtn(`🗑 ဖျက် ${i + 1}`, `sch:del:${s.id}`, i, 'danger')]);
   });
@@ -10530,14 +10687,14 @@ bot.on('text', async (ctx, next) => {
   if (w.step === 'time') {
     const p = parseHHMM(text);
     if (!p) {
-      await ctx.reply('❌ အချိန် ပုံစံ: <code>17:00</code>', { parse_mode: 'HTML' });
+      await ctx.reply('❌ နာရီဂဏန်း ထည့်ပါ (ဥပမာ <code>17</code>)', { parse_mode: 'HTML' });
       return;
     }
     const time = `${String(p.h).padStart(2, '0')}:${String(p.m).padStart(2, '0')}`;
     w.time = time;
     w.step = 'count';
     scheduleWizard.set(ctx.from.id, w);
-    await goToCountStep(ctx, { game: w.game!, time }, false);
+    await goToCountStep(ctx, { game: w.game!, time, date: w.date }, false);
     return;
   }
 
@@ -10560,11 +10717,21 @@ bot.on('text', async (ctx, next) => {
       return;
     }
     const time = `${String(w.hour).padStart(2, '0')}:${String(n).padStart(2, '0')}`;
+    if (w.date === mmTodayYmd()) {
+      const iso = runIsoFromDateAndTime(w.date, time);
+      if (iso && new Date(iso).getTime() <= Date.now() + 30_000) {
+        await ctx.reply('❌ ဒီအချိန် ပြီးသွားပါပြီ — နောက်အချိန် ရွေးပါ။');
+        return;
+      }
+    }
     w.time = time;
     w.step = 'count';
     scheduleWizard.set(ctx.from.id, w);
-    await ctx.reply(`✅ အချိန် သတ်မှတ်ပြီး: <code>${time}</code>`, { parse_mode: 'HTML' });
-    await goToCountStep(ctx, { game: w.game, time }, false);
+    await ctx.reply(
+      `✅ အချိန် သတ်မှတ်ပြီး: <code>${formatScheduleTime(time)}</code>`,
+      { parse_mode: 'HTML' }
+    );
+    await goToCountStep(ctx, { game: w.game, time, date: w.date }, false);
     return;
   }
 
@@ -10574,21 +10741,29 @@ bot.on('text', async (ctx, next) => {
       await ctx.reply('❌ 1–50 ဂဏန်း ထည့်ပါ (သို့မဟုတ် button နှိပ်ပါ)');
       return;
     }
+    const dateYmd = w.date || mmTodayYmd();
+    let nextRunAt = runIsoFromDateAndTime(dateYmd, w.time!);
+    if (!nextRunAt) nextRunAt = nextRunIsoFromHHMM(w.time!);
+    if (new Date(nextRunAt).getTime() <= Date.now() + 30_000) {
+      await ctx.reply('❌ ဒီရက်/အချိန် ပြီးသွားပါပြီ — ပြန်ရွေးပါ။');
+      return;
+    }
     const job: GameSchedule = {
       id: `${ctx.from.id}_${w.game}_${Date.now()}`,
       tgUserId: ctx.from.id,
       chatId: ctx.chat.id,
       game: w.game,
+      date: dateYmd,
       time: w.time!,
       count: n,
-      nextRunAt: nextRunIsoFromHHMM(w.time!),
+      nextRunAt,
       enabled: true,
       createdAt: new Date().toISOString(),
     };
     await addSchedule(job);
     scheduleWizard.delete(ctx.from.id);
     await ctx.reply(
-      `✅ Schedule သိမ်းပြီး (တစ်ကြိမ်သာ)\n${GAME_LABELS[job.game]}\n🕐 ${job.time}\n🎮 ${n} ပွဲ\n⏭ ${fmtMmTime(job.nextRunAt)}`,
+      `✅ Schedule သိမ်းပြီး (တစ်ကြိမ်သာ)\n${GAME_LABELS[job.game]}\n📅 ${formatScheduleDate(dateYmd)}\n🕐 ${formatScheduleTime(job.time)}\n🎮 ${n} ပွဲ\n⏭ ${fmtMmTime(job.nextRunAt)}`,
       { parse_mode: 'HTML' }
     );
     return;
