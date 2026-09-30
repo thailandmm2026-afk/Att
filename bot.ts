@@ -10466,6 +10466,25 @@ function buildTimeButtons(): any[][] {
   return rows;
 }
 
+/** မိနစ် 1–59 · တစ်တန်း 10 ခု + ဆက်လုပ်မည် */
+function buildMinuteButtons(hour: number): any[][] {
+  const rows: any[][] = [];
+  let row: any[] = [];
+  for (let m = 1; m <= 59; m++) {
+    row.push(coloredBtn(String(m), `sch:min:${m}`, m));
+    if (row.length === 10) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length) rows.push(row);
+  rows.push([
+    coloredBtn('➡️ ဆက်လုပ်မည် (မိနစ် မရွေး)', 'sch:min:skip', 0, 'success'),
+  ]);
+  rows.push([coloredBtn('« နာရီ ပြန်ရွေးမယ်', `sch:t:${String(hour).padStart(2, '0')}:00`, 0, 'primary')]);
+  return rows;
+}
+
 function startScheduleTicker() {
   armAllPendingSchedules().catch((e) => console.error(e));
   scheduleTick().catch((e) => console.error(e));
@@ -10666,25 +10685,43 @@ bot.action(/^sch:t:(\d{2}):(\d{2})$/, async (ctx) => {
   await ctx.editMessageText(
     `⏰ <b>${GAME_LABELS[w.game]}</b>\n` +
       `🕐 နာရီ: <b>${hour}</b>\n\n` +
-      `━━━━━━━━━━━━━━━━\n` +
-      `❓ <b>မိနစ် သတ်မှတ်ချင်ပါသလား?</b>\n\n` +
-      `✅ သတ်မှတ်မည် ဆိုပါက\n` +
-      ` <code>1</code> မှ <code>59</code> အတွင်း နံပါတ် တစ်ခု ပို့ပါ။\n` +
-      ` ဥပမာ: <code>30</code> → <b>${hour}:30</b>\n\n` +
-      `➡️ မသတ်မှတ်ချင်ပါက\n` +
-      ` အောက်က <b>ဆက်လုပ်မည်</b> ကို နှိပ်ပါ။\n` +
-      ` (<b>${hour}</b> နာရီ အတိုင်း ဆက်လုပ်မည်)\n` +
-      `━━━━━━━━━━━━━━━━`,
+      `❓ <b>မိနစ် ရွေးပါ</b> (1 – 59)\n\n` +
+      `ဥပမာ: <code>30</code> → <b>${hour}:30</b>\n\n` +
+      `မိနစ် မရွေးချင်ပါက အောက်က\n` +
+      `<b>➡️ ဆက်လုပ်မည်</b> ကို နှိပ်ပါ။\n` +
+      `(<b>${hour}</b> နာရီ အတိုင်း ဆက်လုပ်မည်)`,
     {
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [coloredBtn('➡️ ဆက်လုပ်မည် (မိနစ် မသတ်မှတ်)', 'sch:min:skip', 0, 'success')],
-          [coloredBtn('« နာရီ ပြန်ရွေးမယ်', `sch:new:${w.game}`, 0, 'primary')],
-        ],
-      },
+      reply_markup: { inline_keyboard: buildMinuteButtons(hour) },
     }
   ).catch(() => {});
+});
+
+/** မိနစ် button 1–59 */
+bot.action(/^sch:min:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const minute = parseInt(ctx.match[1], 10);
+  if (!Number.isFinite(minute) || minute < 1 || minute > 59) {
+    return ctx.answerCbQuery('မိနစ် မမှန်', { show_alert: true }).catch(() => {});
+  }
+  const w = scheduleWizard.get(ctx.from!.id);
+  if (!w?.game || w.hour === undefined) {
+    return renderScheduleMenu(ctx);
+  }
+  const time = `${String(w.hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  if (w.date === mmTodayYmd()) {
+    const iso = runIsoFromDateAndTime(w.date, time);
+    if (iso && new Date(iso).getTime() <= Date.now() + 30_000) {
+      await ctx.answerCbQuery('ဒီအချိန် ပြီးသွားပါပြီ — နောက်မိနစ် ရွေးပါ', {
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+  }
+  w.step = 'count';
+  w.time = time;
+  scheduleWizard.set(ctx.from!.id, w);
+  await goToCountStep(ctx, { game: w.game, time, date: w.date }, true);
 });
 
 bot.action('sch:min:skip', async (ctx) => {
@@ -10923,7 +10960,7 @@ async function notifyUsersBotUpdated() {
       process.env.BOT_NAME ||
       'Ki Ki BOT';
 
-    // Mr.Ki Ki Panel Online ပုံစံ
+    // Mr.Hosting Panel Online ပုံစံ
     const text =
       `<b>✓ Bot Online</b>\n` +
       `•  Brand: <b>${escapeHtml(brand)}</b>\n` +
