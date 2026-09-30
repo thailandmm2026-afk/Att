@@ -10013,11 +10013,86 @@ async function addSchedule(s: GameSchedule) {
   const list = await loadSchedules();
   list.push(s);
   await saveSchedules(list);
+  // သတ်မှတ်အချိန်မှာ တိုက်ရိုက် ဖွင့် (ticker မကိုး)
+  armScheduleTimer(s);
 }
 
 async function removeSchedule(id: string, tgUserId: number) {
   const list = await loadSchedules();
   await saveSchedules(list.filter((x) => !(x.id === id && x.tgUserId === tgUserId)));
+  clearScheduleTimer(id);
+}
+
+/** job id → timeout handle */
+const scheduleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const scheduleRunning = new Set<string>();
+
+function clearScheduleTimer(id: string) {
+  const t = scheduleTimers.get(id);
+  if (t) {
+    clearTimeout(t);
+    scheduleTimers.delete(id);
+  }
+}
+
+/** သတ်မှတ် nextRunAt ရောက်ရင် claim + run */
+function armScheduleTimer(job: GameSchedule) {
+  clearScheduleTimer(job.id);
+  const t = new Date(job.nextRunAt).getTime();
+  if (!Number.isFinite(t)) {
+    console.warn('⏰ armScheduleTimer invalid nextRunAt', job.id, job.nextRunAt);
+    return;
+  }
+  let delay = t - Date.now();
+  // ပြီးနေပြီးသား / ခဏအတွင်း → 2s အတွင်း run
+  if (delay < 2000) delay = 2000;
+  // setTimeout max ~24.8 days — ထို့ထက်ကြာရင် ticker က ကိုင်မယ်
+  if (delay > 24 * 60 * 60 * 1000) {
+    console.log(`⏰ job ${job.id} far future (${Math.round(delay / 3600000)}h) — ticker only`);
+    return;
+  }
+  console.log(
+    `⏰ armed job=${job.id} in ${Math.round(delay / 1000)}s at ${job.nextRunAt}`
+  );
+  const handle = setTimeout(() => {
+    scheduleTimers.delete(job.id);
+    claimAndRunSchedule(job.id).catch((e) => console.error('claimAndRun', e));
+  }, delay);
+  scheduleTimers.set(job.id, handle);
+}
+
+async function claimAndRunSchedule(jobId: string) {
+  if (scheduleRunning.has(jobId)) return;
+  const list = await loadSchedules();
+  const idx = list.findIndex((x) => x.id === jobId && x.enabled);
+  if (idx < 0) {
+    console.log(`⏰ claim skip — job not found/disabled: ${jobId}`);
+    return;
+  }
+  const job = list[idx];
+  // due မဟုတ်သေးရင် ပြန် arm
+  const t = new Date(job.nextRunAt).getTime();
+  if (Number.isFinite(t) && t > Date.now() + 3000) {
+    armScheduleTimer(job);
+    return;
+  }
+  // claim: list က ဖယ်
+  list.splice(idx, 1);
+  await saveSchedules(list);
+  scheduleRunning.add(jobId);
+  try {
+    await runScheduleJob(job);
+  } finally {
+    scheduleRunning.delete(jobId);
+  }
+}
+
+async function armAllPendingSchedules() {
+  const list = await loadSchedules();
+  console.log(`⏰ arming ${list.length} pending schedule(s)`);
+  for (const job of list) {
+    if (job.enabled) armScheduleTimer(job);
+  }
 }
 
 async function getUserSchedules(tgUserId: number): Promise<GameSchedule[]> {
@@ -10171,8 +10246,14 @@ async function playPirateOnce(
       }
     }
   );
+  if (result.win === 0 && result.fail === 0) {
+    return {
+      ok: false,
+      message: result.logs?.slice(-3).join(' | ') || 'Pirate ကစားမရပါ (0 win / 0 fail)',
+    };
+  }
   return {
-    ok: result.win > 0 || result.fail > 0 || !result.stopped,
+    ok: true,
     message: `Pirate: ${result.win}W / ${result.fail}F${result.stopped ? ' (stopped)' : ''}`,
   };
 }
@@ -10199,11 +10280,18 @@ async function runScheduleJob(job: GameSchedule) {
     ).catch(() => {});
 
     if (job.game === 'pirate') {
-      // Pirate — count = level အရေအတွက် တစ်ခါတည်း autoBattle
       const r = await playPirateOnce(job.tgUserId, job.chatId, targetCount);
-      if (!r.ok) stopReason = r.message;
-      else {
-        done = targetCount;
+      if (!r.ok) {
+        stopReason = r.message || 'Pirate ကစားမရပါ';
+        await bot.telegram
+          .sendMessage(
+            job.chatId,
+            `❌ <b>ကစားမရပါ</b>\n<code>${escapeHtml(stopReason).slice(0, 300)}</code>`,
+            { parse_mode: 'HTML' }
+          )
+          .catch(() => {});
+      } else {
+        done = Math.max(r.message.match(/(\d+)W/) ? parseInt(RegExp.$1, 10) : targetCount, 0);
         lines.push(r.message);
       }
     } else {
@@ -10214,7 +10302,14 @@ async function runScheduleJob(job: GameSchedule) {
         else r = await playOuGameRounds(job.tgUserId, 1);
 
         if (!r.ok) {
-          stopReason = r.message;
+          stopReason = r.message || 'ကစားမရပါ';
+          await bot.telegram
+            .sendMessage(
+              job.chatId,
+              `❌ <b>ပွဲ ${i + 1} ကစားမရပါ</b>\n<code>${escapeHtml(stopReason).slice(0, 300)}</code>`,
+              { parse_mode: 'HTML' }
+            )
+            .catch(() => {});
           break;
         }
         done++;
@@ -10232,13 +10327,28 @@ async function runScheduleJob(job: GameSchedule) {
   } catch (e: any) {
     stopReason = e?.message || String(e);
     console.error('runScheduleJob error', e);
+    await bot.telegram
+      .sendMessage(
+        job.chatId,
+        `❌ <b>Auto Schedule Error</b>\n<code>${escapeHtml(stopReason).slice(0, 400)}</code>`,
+        { parse_mode: 'HTML' }
+      )
+      .catch(() => {});
   }
 
   let summary =
-    `✅ <b>Auto Schedule ပြီးပါပြီ</b>\n` +
+    done > 0
+      ? `✅ <b>Auto Schedule ပြီးပါပြီ</b>\n`
+      : `⚠️ <b>Auto Schedule မအောင်မြင်ပါ</b>\n`;
+  summary +=
     `${GAME_LABELS[job.game]}\n` +
-    `ကစားပြီး: <b>${done}</b> ပွဲ\n`;
-  if (stopReason) summary += `ရပ်ရခြင်း: <code>${escapeHtml(stopReason).slice(0, 120)}</code>\n`;
+    `ကစားပြီး: <b>${done}</b> / ${targetCount} ပွဲ\n`;
+  if (stopReason) {
+    summary += `\n❌ အကြောင်းရင်း:\n<code>${escapeHtml(stopReason).slice(0, 300)}</code>\n`;
+    if (/login|token|expired|ချိတ်မရ|မရှိ/i.test(stopReason)) {
+      summary += `\n💡 MYTEL / ATOM ပြန် Login ဝင်ပြီး Schedule အသစ် ထည့်ပါ။`;
+    }
+  }
   if (lines.length) summary += `\n` + lines.slice(0, 15).map((l) => escapeHtml(l)).join('\n');
 
   await bot.telegram.sendMessage(job.chatId, summary, { parse_mode: 'HTML' }).catch(() => {});
@@ -10252,35 +10362,20 @@ async function scheduleTick() {
   try {
     const list = await loadSchedules();
     const now = Date.now();
-    const due: GameSchedule[] = [];
-    const remain: GameSchedule[] = [];
     for (const job of list) {
-      if (!job.enabled) {
-        remain.push(job);
-        continue;
-      }
+      if (!job.enabled) continue;
+      if (scheduleRunning.has(job.id)) continue;
       const t = new Date(job.nextRunAt).getTime();
-      if (!Number.isFinite(t)) {
-        console.warn('⏰ invalid nextRunAt', job.id, job.nextRunAt);
-        remain.push(job);
-        continue;
-      }
+      if (!Number.isFinite(t)) continue;
       if (t > now) {
-        remain.push(job);
+        // timer မရှိသေးရင် arm
+        if (!scheduleTimers.has(job.id)) armScheduleTimer(job);
         continue;
       }
-      // due — remove from list first (one-shot) to avoid double fire
       console.log(
-        `⏰ DUE job=${job.id} game=${job.game} nextRunAt=${job.nextRunAt} now=${new Date(now).toISOString()}`
+        `⏰ TICK due job=${job.id} nextRunAt=${job.nextRunAt} now=${new Date(now).toISOString()}`
       );
-      due.push(job);
-    }
-    if (due.length) {
-      await saveSchedules(remain);
-      for (const job of due) {
-        // job ပြီးရင် list ထဲ မရှိတော့ — runScheduleJob က ဖျက်စရာ မလို
-        runScheduleJob(job).catch((e) => console.error('schedule job error', e));
-      }
+      claimAndRunSchedule(job.id).catch((e) => console.error(e));
     }
   } catch (e) {
     console.error('scheduleTick error', e);
@@ -10372,15 +10467,14 @@ function buildTimeButtons(): any[][] {
 }
 
 function startScheduleTicker() {
-  // ချက်ချင်း တစ်ခါ စစ်
+  armAllPendingSchedules().catch((e) => console.error(e));
   scheduleTick().catch((e) => console.error(e));
   setInterval(() => {
     scheduleTick().catch(() => {});
-  }, 10_000);
-  // restart ပြီး ခဏအကြာ ထပ်စစ်
-  setTimeout(() => scheduleTick().catch(() => {}), 5000);
-  setTimeout(() => scheduleTick().catch(() => {}), 15000);
-  console.log('⏰ Game schedule ticker started (10s)');
+  }, 5_000);
+  setTimeout(() => scheduleTick().catch(() => {}), 3000);
+  setTimeout(() => scheduleTick().catch(() => {}), 10000);
+  console.log('⏰ Game schedule ticker + timers started (5s)');
 }
 
 async function renderScheduleMenu(ctx: any) {
@@ -10807,36 +10901,41 @@ bot.on('text', async (ctx, next) => {
 // ==========================================
 // 🛠️ ADMIN PANEL (BULLETPROOF ROUTER EDITION)
 
-/** Bot စတင်တိုင်း /start နှိပ်ဖူးသူအားလုံးဆီ update စာ ပို့ */
+/** Bot စတင်တိုင်း /start နှိပ်ဖူးသူအားလုံးဆီ Online status စာ ပို့ (Panel style) */
 async function notifyUsersBotUpdated() {
   try {
     const db = await getDb();
     const users = Object.keys(db.users || {});
     if (!users.length) {
-      console.log('📢 Update notify: user မရှိသေး');
+      console.log('📢 Online notify: user မရှိသေး');
       return;
     }
 
-    // တူညီ restart spam မဖြစ်အောင် — နောက်ဆုံး notify က ၃ နာရီ မပြည့်ရင် ကျော်
-    const last = db.lastUpdateNotifyAt ? new Date(db.lastUpdateNotifyAt).getTime() : 0;
-    if (Date.now() - last < 3 * 60 * 60 * 1000) {
-      console.log('📢 Update notify: ၃ နာရီအတွင်း ပို့ပြီးသား — ကျော်လိုက်ပါပြီ');
-      return;
-    }
+    const totalUsers = users.filter((id) => !db.users[id]?.banned).length;
+    const atomSessions = Object.keys(db.sessions || {}).length;
+    const mytelSessions = Object.keys(db.myidSessions || {}).length;
+    const schedules = Array.isArray(db.gameSchedules)
+      ? db.gameSchedules.filter((s: any) => s.enabled).length
+      : 0;
+    const ownerId = process.env.ADMIN_USER_ID || '—';
+    const brand =
+      process.env.BOT_BRAND ||
+      process.env.BOT_NAME ||
+      'Ki Ki BOT';
+
+    // Mr.Ki Ki Panel Online ပုံစံ
+    const text =
+      `<b>✓ Bot Online</b>\n` +
+      `•  Brand: <b>${escapeHtml(brand)}</b>\n` +
+      `•  Owner: <code>${escapeHtml(ownerId)}</code>\n` +
+      `•  Users: <code>${totalUsers}</code>\n` +
+      `•  ATOM: <code>${atomSessions}</code>\n` +
+      `•  MYTEL: <code>${mytelSessions}</code>\n` +
+      `•  Schedules: <code>${schedules}</code>\n` +
+      `•  Status: <b>running</b>`;
+
     db.lastUpdateNotifyAt = new Date().toISOString();
     await saveDb(db);
-
-    const text =
-      `🔔 <b>Bot Update</b>\n` +
-      `════════════════════\n\n` +
-      `✅ Bot ကို <b>Update</b> လုပ်ပြီးပါပြီ။\n\n` +
-      `🆕 <b>အသစ်ပါဝင်သည်များ</b>\n` +
-      `├ ⏰ Auto Schedule (ရက် + အချိန် သတ်မှတ်ပြီး auto ကစား)\n` +
-      `├ 📅 ပြက္ခဒိန် — ဒီနေ့ အပါအဝင် ရက်ရွေးလို့ရ\n` +
-      `├ 🎮 Toh Toh · ရွှေလယ်တော · OU Game · Pirate War\n` +
-      `├ ⛵ Pirate War — ပွဲရလဒ် တစ်ကြောင်းချင်း\n` +
-      `└ 🎁 1GB+ ဆု — Admin / Channel Noti\n\n` +
-      `👉 <b>/start</b> နှိပ်ပြီး ပြန်သုံးနိုင်ပါတယ်။`;
 
     let ok = 0;
     let fail = 0;
@@ -10849,14 +10948,13 @@ async function notifyUsersBotUpdated() {
       } catch {
         fail++;
       }
-      // flood မဖြစ်အောင်
       if ((ok + fail) % 25 === 0) {
         await new Promise((r) => setTimeout(r, 1000));
       } else {
-        await new Promise((r) => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 40));
       }
     }
-    console.log(`📢 Update notify ပြီး: success=${ok} fail=${fail}`);
+    console.log(`📢 Online notify ပြီး: success=${ok} fail=${fail}`);
   } catch (e) {
     console.error('notifyUsersBotUpdated error', e);
   }
