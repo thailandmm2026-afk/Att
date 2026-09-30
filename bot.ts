@@ -3652,20 +3652,58 @@ function pe(id: string, fallback: string) {
   return `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`;
 }
 
+/** Telegram button styles: primary=ပြာ, danger=နီ, success=အစိမ်း
+ *  style = app အသစ် · 🔴🔵🟢 emoji = app အဟောင်းပါ မြင်ရအောင်
+ */
+const BTN_STYLES = ['danger', 'primary', 'success'] as const;
+const BTN_EMOJI: Record<'danger' | 'primary' | 'success', string> = {
+  danger: '🔴',
+  primary: '🔵',
+  success: '🟢',
+};
+function btnStyle(index: number): 'danger' | 'primary' | 'success' {
+  return BTN_STYLES[index % BTN_STYLES.length];
+}
+/** စာသားမှာ color circle မပါသေးရင် ရှေ့ကနေ ထည့် */
+function withColorEmoji(text: string, style: 'danger' | 'primary' | 'success'): string {
+  // ရှိပြီးသား အရောင်စက် မထပ် (🔵🟠 ပါပြီးသား home buttons စသည်)
+  if (/^[🔴🔵🟢🟠🟡🟣🟤⚪⚫]/u.test(text)) return text;
+  return `${BTN_EMOJI[style]} ${text}`;
+}
+/** Inline callback button — style + emoji (app အဟောင်း/အသစ်) */
+function coloredBtn(
+  text: string,
+  callback_data: string,
+  index = 0,
+  fixedStyle?: 'danger' | 'primary' | 'success'
+): any {
+  const style = fixedStyle || btnStyle(index);
+  return {
+    text: withColorEmoji(text, style),
+    callback_data,
+    style,
+  };
+}
+/** Reply keyboard button — style + emoji (app အဟောင်း/အသစ်) */
+function kbBtn(text: string, index = 0, fixedStyle?: 'danger' | 'primary' | 'success'): any {
+  const style = fixedStyle || btnStyle(index);
+  return {
+    text: withColorEmoji(text, style),
+    style,
+  };
+}
+
 /** Premium home: real custom emojis + colored buttons */
 function getHomeInlineKeyboard() {
-  // Keep the home keyboard compatible with every Telegram Bot API version.
-  // Custom button icons/styles are intentionally omitted here; the visible
-  // Premium emojis are already included in the message text.
   return {
     inline_keyboard: [
       [
-        { text: '🔵 ATOM', callback_data: 'home_atom' },
-        { text: '🟠 MYTEL', callback_data: 'home_mytel' },
+        coloredBtn('🔵 ATOM', 'home_atom', 0, 'primary'),
+        coloredBtn('🟠 MYTEL', 'home_mytel', 1, 'danger'),
       ],
       [
-        { text: '📖 အသုံးပြုနည်း', callback_data: 'home_help' },
-        { text: '👤 Profile', callback_data: 'home_profile' },
+        coloredBtn('📖 အသုံးပြုနည်း', 'home_help', 2, 'success'),
+        coloredBtn('👤 Profile', 'home_profile', 0, 'primary'),
       ],
     ],
   };
@@ -3699,22 +3737,22 @@ function getHomeMessageText(user?: { id: number; username?: string; first_name?:
   );
 }
 
-/** ATOM submenu – reply keyboard (feature buttons) with colorful emojis */
+/** ATOM submenu – reply keyboard with colors */
 function getAtomReplyKeyboard(loggedIn: boolean) {
   if (!loggedIn) {
     return Markup.keyboard([
-      ['🔵 🔑 ATOM အကောင့်ဝင်ရန်'],
-      ['🏠 ပင်မစာမျက်နှာ'],
+      [kbBtn('🔵 🔑 ATOM အကောင့်ဝင်ရန်', 0, 'primary')],
+      [kbBtn('🏠 ပင်မစာမျက်နှာ', 0, 'success')],
     ]).resize();
   }
   return Markup.keyboard([
-    ['💰 လက်ကျန်ငွေစစ်ရန်', '📊 ပွိုင့်စစ်ရန်'],
-    ['🎟️ TohToh ကူပွန်', '🎮 TohToh ဆော့ရန်'],
-    ['🔴 TohToh Live ဝယ်ယူရန်'],
-    ['🌾 ရွှေလယ်တော ကူပွန်', '🐔 ရွှေလယ်တော ဆော့ရန်'],
-    ['🟡 ရွှေလယ်တော Live ဝယ်ယူရန်'],
-    ['⏰ Auto Schedule', '🎁 Daily Point Claim'],
-    ['🔄 ATOM ထွက်ရန်', '🏠 ပင်မစာမျက်နှာ'],
+    [kbBtn('💰 လက်ကျန်ငွေစစ်ရန်', 0), kbBtn('📊 ပွိုင့်စစ်ရန်', 1)],
+    [kbBtn('🎟️ TohToh ကူပွန်', 2), kbBtn('🎮 TohToh ဆော့ရန်', 0)],
+    [kbBtn('🔴 TohToh Live ဝယ်ယူရန်', 0, 'danger')],
+    [kbBtn('🌾 ရွှေလယ်တော ကူပွန်', 1), kbBtn('🐔 ရွှေလယ်တော ဆော့ရန်', 2)],
+    [kbBtn('🟡 ရွှေလယ်တော Live ဝယ်ယူရန်', 0, 'primary')],
+    [kbBtn('⏰ Auto Schedule', 1), kbBtn('🎁 Daily Point Claim', 2)],
+    [kbBtn('🔄 ATOM ထွက်ရန်', 0, 'danger'), kbBtn('🏠 ပင်မစာမျက်နှာ', 0, 'success')],
   ]).resize();
 }
 
@@ -3722,29 +3760,29 @@ function getAtomReplyKeyboard(loggedIn: boolean) {
 function getMytelReplyKeyboard(loggedIn: boolean) {
   if (!loggedIn) {
     return Markup.keyboard([
-      ['🟠 🔐 MYTEL Login (OTP)'],
-      ['🔑 Access Token Login'],
-      ['🏠 ပင်မစာမျက်နှာ'],
+      [kbBtn('🟠 🔐 MYTEL Login (OTP)', 0, 'danger')],
+      [kbBtn('🔑 Access Token Login', 0, 'primary')],
+      [kbBtn('🏠 ပင်မစာမျက်နှာ', 0, 'success')],
     ]).resize();
   }
   return Markup.keyboard([
-    ['📊 Data စစ်ရန်', '🔄 Point Exchange'],
-    ['🛒 Mytel Package ဝယ်ရန်', '📜 Point History'],
-    ['🎁 Daily Claim', '📡 Network Test'],
-    ['😎 Ou Game ဆော့မယ်', '⛵ Pirate War ဆော့မယ်'],
-    ['⏰ Auto Schedule'],
-    ['🔄 MYTEL Logout', '🏠 ပင်မစာမျက်နှာ'],
+    [kbBtn('📊 Data စစ်ရန်', 0), kbBtn('🔄 Point Exchange', 1)],
+    [kbBtn('🛒 Mytel Package ဝယ်ရန်', 2), kbBtn('📜 Point History', 0)],
+    [kbBtn('🎁 Daily Claim', 1), kbBtn('📡 Network Test', 2)],
+    [kbBtn('😎 Ou Game ဆော့မယ်', 0, 'primary'), kbBtn('⛵ Pirate War ဆော့မယ်', 0, 'danger')],
+    [kbBtn('⏰ Auto Schedule', 0, 'success')],
+    [kbBtn('🔄 MYTEL Logout', 0, 'danger'), kbBtn('🏠 ပင်မစာမျက်နှာ', 0, 'success')],
   ]).resize();
 }
 
 /** OU Game submenu */
 function getOuGameKeyboard() {
   return Markup.keyboard([
-    ['🎮 OU Game ဆော့ရန်', '🎁 MYTEL Daily'],
-    ['👤 MYTEL Profile', '🎫 MYTEL Turns'],
-    ['🛒 MYTEL Store', '📋 MYTEL History'],
-    ['🏆 MYTEL Leaderboard'],
-    ['◀️ နောက်သို့'],
+    [kbBtn('🎮 OU Game ဆော့ရန်', 0, 'primary'), kbBtn('🎁 MYTEL Daily', 1)],
+    [kbBtn('👤 MYTEL Profile', 2), kbBtn('🎫 MYTEL Turns', 0)],
+    [kbBtn('🛒 MYTEL Store', 1), kbBtn('📋 MYTEL History', 2)],
+    [kbBtn('🏆 MYTEL Leaderboard', 0, 'success')],
+    [kbBtn('◀️ နောက်သို့', 0, 'primary')],
   ]).resize();
 }
 
@@ -3752,15 +3790,15 @@ function getOuGameKeyboard() {
 function getPirateWarKeyboard(battling = false) {
   if (battling) {
     return Markup.keyboard([
-      ['🛑 ရပ်မယ်'],
-      ['◀️ နောက်သို့'],
+      [kbBtn('🛑 ရပ်မယ်', 0, 'danger')],
+      [kbBtn('◀️ နောက်သို့', 0, 'primary')],
     ]).resize();
   }
   return Markup.keyboard([
-    ['👤 Pirate Profile', '⚔️ Auto Battle'],
-    ['🎰 Lucky Spin', '🔄 Pirate Exchange'],
-    ['⚡ Buy Energy', '🛑 ရပ်မယ်'],
-    ['◀️ နောက်သို့'],
+    [kbBtn('👤 Pirate Profile', 0), kbBtn('⚔️ Auto Battle', 1, 'danger')],
+    [kbBtn('🎰 Lucky Spin', 2), kbBtn('🔄 Pirate Exchange', 0)],
+    [kbBtn('⚡ Buy Energy', 1), kbBtn('🛑 ရပ်မယ်', 0, 'danger')],
+    [kbBtn('◀️ နောက်သို့', 0, 'primary')],
   ]).resize();
 }
 
@@ -4191,6 +4229,19 @@ const myidAuthWizard = new Scenes.WizardScene<any>(
 const stage = new Scenes.Stage([authWizard, myidAuthWizard]);
 bot.use(session());
 bot.use(stage.middleware());
+
+// Reply keyboard color emoji (🔴🔵🟢) ဖယ်ပြီး hears နဲ့ match မိအောင်
+bot.use(async (ctx, next) => {
+  try {
+    if (ctx.message && 'text' in ctx.message && typeof ctx.message.text === 'string') {
+      const stripped = ctx.message.text.replace(/^[🔴🔵🟢]\s*/u, '');
+      if (stripped !== ctx.message.text) {
+        (ctx.message as any).text = stripped;
+      }
+    }
+  } catch {}
+  return next();
+});
 
 // Force-join + ban middleware
 bot.use(async (ctx, next) => {
@@ -9832,7 +9883,7 @@ interface GameSchedule {
 
 const scheduleWizard = new Map<
   number,
-  { step: 'game' | 'time' | 'count'; game?: GameScheduleType }
+  { step: 'game' | 'time' | 'minute' | 'count'; game?: GameScheduleType; hour?: number; time?: string }
 >();
 
 const GAME_LABELS: Record<GameScheduleType, string> = {
@@ -10174,45 +10225,42 @@ async function getAvailablePlayCount(
 }
 
 function buildCountButtons(available: number): any[][] {
-  const max = Math.min(Math.max(available, 0), 40);
-  if (max <= 0) return [[{ text: '❌ ကစားခွင့် မရှိ', callback_data: 'sch:menu' }]];
+  const max = Math.min(Math.max(available, 0), 100);
+  if (max <= 0) {
+    return [[coloredBtn('❌ ကစားခွင့် မရှိ', 'sch:menu', 0, 'danger')]];
+  }
   const rows: any[][] = [];
   let row: any[] = [];
   for (let i = 1; i <= max; i++) {
-    row.push({ text: `${i}`, callback_data: `sch:c:${i}` });
-    if (row.length === 5) {
+    row.push(coloredBtn(`${i}`, `sch:c:${i}`, i - 1));
+    // တစ်တန်းလျှင် 10 ခု — အကြိမ်ရှိသလောက် တန်းဆက်ပေါ်
+    if (row.length === 10) {
       rows.push(row);
       row = [];
     }
   }
   if (row.length) rows.push(row);
-  // full amount shortcut
   if (max > 1) {
-    rows.push([{ text: `✅ အားလုံး (${max})`, callback_data: `sch:c:${max}` }]);
+    rows.push([coloredBtn(`✅ အားလုံး (${max})`, `sch:c:${max}`, 0, 'success')]);
   }
-  rows.push([{ text: '« နောက်သို့', callback_data: 'sch:menu' }]);
+  rows.push([coloredBtn('« နောက်သို့', 'sch:menu', 0, 'primary')]);
   return rows;
 }
 
 function buildTimeButtons(): any[][] {
-  // Myanmar time quick picks — hourly-ish
-  const times = [
-    '06:00', '07:00', '08:00', '09:00', '10:00',
-    '11:00', '12:00', '13:00', '14:00', '15:00',
-    '16:00', '17:00', '18:00', '19:00', '20:00',
-    '21:00', '22:00', '23:00', '00:00', '05:00',
-  ];
+  // 00:00 – 23:00 အားလုံး · နီ / ပြာ / အစိမ်း ဝေခြမ်း
   const rows: any[][] = [];
   let row: any[] = [];
-  for (const t of times) {
-    row.push({ text: t, callback_data: `sch:t:${t}` });
-    if (row.length === 5) {
+  for (let h = 0; h <= 23; h++) {
+    const t = `${String(h).padStart(2, '0')}:00`;
+    row.push(coloredBtn(t, `sch:t:${t}`, h));
+    if (row.length === 6) {
       rows.push(row);
       row = [];
     }
   }
   if (row.length) rows.push(row);
-  rows.push([{ text: '« နောက်သို့', callback_data: 'sch:menu' }]);
+  rows.push([coloredBtn('« နောက်သို့', 'sch:menu', 0, 'primary')]);
   return rows;
 }
 
@@ -10244,15 +10292,15 @@ async function renderScheduleMenu(ctx: any) {
   }
   const buttons: any[][] = [
     [
-      { text: '🎮 Toh Toh', callback_data: 'sch:new:tohtoh' },
-      { text: '🐔 ရွှေလယ်တော', callback_data: 'sch:new:goldenfarm' },
+      coloredBtn('🎮 Toh Toh', 'sch:new:tohtoh', 0, 'danger'),
+      coloredBtn('🐔 ရွှေလယ်တော', 'sch:new:goldenfarm', 1, 'primary'),
     ],
     [
-      { text: '😎 OU Game', callback_data: 'sch:new:ougame' },
-      { text: '⛵ Pirate', callback_data: 'sch:new:pirate' },
+      coloredBtn('😎 OU Game', 'sch:new:ougame', 2, 'success'),
+      coloredBtn('⛵ Pirate', 'sch:new:pirate', 0, 'danger'),
     ],
-    [{ text: '📋 ကျွန်ုပ်၏ Schedules', callback_data: 'sch:list' }],
-    [{ text: '🗑 အားလုံး ဖျက်မယ်', callback_data: 'sch:clear' }],
+    [coloredBtn('📋 ကျွန်ုပ်၏ Schedules', 'sch:list', 0, 'primary')],
+    [coloredBtn('🗑 အားလုံး ဖျက်မယ်', 'sch:clear', 0, 'danger')],
   ];
   if (ctx.callbackQuery) {
     await ctx.editMessageText(msg, {
@@ -10290,9 +10338,17 @@ bot.action(/^sch:new:(tohtoh|goldenfarm|ougame|pirate)$/, async (ctx) => {
   scheduleWizard.set(ctx.from!.id, { step: 'time', game });
   await ctx.editMessageText(
     `⏰ <b>${GAME_LABELS[game]}</b>\n\n` +
-      `စတင်မယ့် <b>အချိန်</b> ကို button နှိပ်ပြီး ရွေးပါ။\n` +
-      `(Myanmar time)\n\n` +
-      `သို့မဟုတ် <code>HH:MM</code> ရိုက်ပို့နိုင်ပါတယ်။`,
+      `စတင်မယ့် <b>နာရီ</b> ကို button နှိပ်ပြီး ရွေးပါ။\n` +
+      `(မြန်မာစံတော်ချိန်)\n\n` +
+      `📖 <b>အချိန် ရှင်းပြချက်</b>\n` +
+      `├ <code>00:00 – 05:00</code> → ည / မနက်ဦး\n` +
+      `├ <code>06:00 – 11:00</code> → မနက်\n` +
+      `├ <code>12:00 – 16:00</code> → နေ့လည် / ညနေဦး\n` +
+      `├ <code>17:00 – 19:00</code> → ညနေ\n` +
+      `└ <code>20:00 – 23:00</code> → ည\n\n` +
+      `ဥပမာ: <code>17:00</code> = ညနေ ၅ နာရီ\n` +
+      `ဥပမာ: <code>21:00</code> = ည ၉ နာရီ\n\n` +
+      `သို့မဟုတ် <code>HH:MM</code> ပုံစံ ရိုက်ပို့နိုင်ပါတယ်။`,
     {
       parse_mode: 'HTML',
       reply_markup: { inline_keyboard: buildTimeButtons() },
@@ -10300,42 +10356,83 @@ bot.action(/^sch:new:(tohtoh|goldenfarm|ougame|pirate)$/, async (ctx) => {
   ).catch(() => {});
 });
 
-bot.action(/^sch:t:(\d{2}:\d{2})$/, async (ctx) => {
-  await ctx.answerCbQuery('အကြိမ်ရေ စစ်နေ...').catch(() => {});
-  const time = ctx.match[1];
+/** နာရီ+မိနစ် သတ်မှတ်ပြီး ပွဲအရေ ရွေးသို့ သွား */
+async function goToCountStep(ctx: any, w: { game: GameScheduleType; time: string }, edit = true) {
+  const available = await getAvailablePlayCount(ctx.from!.id, w.game);
+  if (available <= 0) {
+    const msg =
+      `❌ <b>${GAME_LABELS[w.game]}</b>\n\n` +
+      `လက်ရှိ ကစားခွင့် (coupon/turns) <b>မရှိ</b> သေးပါ။\n` +
+      `ကူပွန်/turns ရပြီးမှ schedule ထည့်ပါ။`;
+    const kb = { inline_keyboard: [[coloredBtn('« နောက်သို့', 'sch:menu', 0, 'primary')]] };
+    if (edit && ctx.callbackQuery) {
+      await ctx.editMessageText(msg, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+    } else {
+      await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: kb });
+    }
+    return;
+  }
+
+  const msg =
+    `⏰ <b>${GAME_LABELS[w.game]}</b> · <code>${w.time}</code>\n\n` +
+    `လက်ကျန်: <b>${available}</b> ကြိမ်\n\n` +
+    `ဘယ်နှစ်ပွဲ ကစားမလဲ? button နှိပ်ပြီး ရွေးပါ။`;
+  const kb = { inline_keyboard: buildCountButtons(available) };
+  if (edit && ctx.callbackQuery) {
+    await ctx.editMessageText(msg, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+  } else {
+    await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: kb });
+  }
+}
+
+bot.action(/^sch:t:(\d{2}):(\d{2})$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const hour = parseInt(ctx.match[1], 10);
   const w = scheduleWizard.get(ctx.from!.id);
   if (!w?.game) {
     return renderScheduleMenu(ctx);
   }
-  w.step = 'count';
-  (w as any).time = time;
+  w.step = 'minute';
+  w.hour = hour;
+  w.time = undefined;
   scheduleWizard.set(ctx.from!.id, w);
 
-  const available = await getAvailablePlayCount(ctx.from!.id, w.game);
-  if (available <= 0) {
-    await ctx.editMessageText(
-      `❌ <b>${GAME_LABELS[w.game]}</b>\n\n` +
-        `လက်ရှိ ကစားခွင့် (coupon/turns) <b>မရှိ</b> သေးပါ။\n` +
-        `ကူပွန်/turns ရပြီးမှ schedule ထည့်ပါ။`,
-      {
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [[{ text: '« နောက်သို့', callback_data: 'sch:menu' }]],
-        },
-      }
-    ).catch(() => {});
-    return;
-  }
-
+  const hourStr = String(hour).padStart(2, '0');
   await ctx.editMessageText(
-    `⏰ <b>${GAME_LABELS[w.game]}</b> · <code>${time}</code>\n\n` +
-      `လက်ကျန်: <b>${available}</b> ကြိမ်\n\n` +
-      `ဘယ်နှစ်ပွဲ ကစားမလဲ? button နှိပ်ပြီး ရွေးပါ။`,
+    `⏰ <b>${GAME_LABELS[w.game]}</b>\n` +
+      `🕐 နာရီ: <b>${hourStr}:00</b>\n\n` +
+      `━━━━━━━━━━━━━━━━\n` +
+      `❓ <b>မိနစ် သတ်မှတ်ချင်ပါသလား?</b>\n\n` +
+      `✅ သတ်မှတ်မည် ဆိုပါက\n` +
+      ` <code>1</code> မှ <code>59</code> အတွင်း နံပါတ် တစ်ခု ပို့ပါ။\n` +
+      ` ဥပမာ: <code>30</code> → <b>${hourStr}:30</b>\n\n` +
+      `➡️ မသတ်မှတ်ချင်ပါက\n` +
+      ` အောက်က <b>ဆက်လုပ်မည်</b> ကို နှိပ်ပါ။\n` +
+      ` (<b>${hourStr}:00</b> အတိုင်း ဆက်လုပ်မည်)\n` +
+      `━━━━━━━━━━━━━━━━`,
     {
       parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: buildCountButtons(available) },
+      reply_markup: {
+        inline_keyboard: [
+          [coloredBtn('➡️ ဆက်လုပ်မည် (မိနစ် မသတ်မှတ်)', 'sch:min:skip', 0, 'success')],
+          [coloredBtn('« နာရီ ပြန်ရွေးမယ်', `sch:new:${w.game}`, 0, 'primary')],
+        ],
+      },
     }
   ).catch(() => {});
+});
+
+bot.action('sch:min:skip', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const w = scheduleWizard.get(ctx.from!.id);
+  if (!w?.game || w.hour === undefined) {
+    return renderScheduleMenu(ctx);
+  }
+  const time = `${String(w.hour).padStart(2, '0')}:00`;
+  w.step = 'count';
+  w.time = time;
+  scheduleWizard.set(ctx.from!.id, w);
+  await goToCountStep(ctx, { game: w.game, time }, true);
 });
 
 bot.action(/^sch:c:(\d+)$/, async (ctx) => {
@@ -10372,7 +10469,7 @@ bot.action(/^sch:c:(\d+)$/, async (ctx) => {
     {
       parse_mode: 'HTML',
       reply_markup: {
-        inline_keyboard: [[{ text: '⏰ Schedule Menu', callback_data: 'sch:menu' }]],
+        inline_keyboard: [[coloredBtn('⏰ Schedule Menu', 'sch:menu', 0, 'primary')]],
       },
     }
   ).catch(() => {});
@@ -10389,18 +10486,18 @@ bot.action('sch:list', async (ctx) => {
   const list = await getUserSchedules(ctx.from!.id);
   if (!list.length) {
     return ctx.editMessageText('ℹ️ Schedule မရှိသေးပါ။', {
-      reply_markup: { inline_keyboard: [[{ text: '« နောက်သို့', callback_data: 'sch:menu' }]] },
+      reply_markup: { inline_keyboard: [[coloredBtn('« နောက်သို့', 'sch:menu', 0, 'primary')]] },
     }).catch(() => {});
   }
   let msg = `📋 <b>ကျွန်ုပ်၏ Schedules</b>\n\n`;
   const rows: any[] = [];
   list.forEach((s, i) => {
     msg +=
-      `${i + 1}. ${GAME_LABELS[s.game]} · ${s.time} · ${s.count <= 0 ? '∞' : s.count}\n` +
+      `${i + 1}. ${GAME_LABELS[s.game]} · ${s.time} · ${s.count}\n` +
       `   ⏭ ${fmtMmTime(s.nextRunAt)}\n`;
-    rows.push([{ text: `🗑 ဖျက် ${i + 1}`, callback_data: `sch:del:${s.id}` }]);
+    rows.push([coloredBtn(`🗑 ဖျက် ${i + 1}`, `sch:del:${s.id}`, i, 'danger')]);
   });
-  rows.push([{ text: '« နောက်သို့', callback_data: 'sch:menu' }]);
+  rows.push([coloredBtn('« နောက်သို့', 'sch:menu', 0, 'primary')]);
   await ctx.editMessageText(msg, {
     parse_mode: 'HTML',
     reply_markup: { inline_keyboard: rows },
@@ -10419,7 +10516,7 @@ bot.action('sch:clear', async (ctx) => {
   await saveSchedules(list.filter((x) => x.tgUserId !== ctx.from!.id));
   scheduleWizard.delete(ctx.from!.id);
   await ctx.editMessageText('✅ သင့် schedules အားလုံး ဖျက်ပြီးပါပြီ။', {
-    reply_markup: { inline_keyboard: [[{ text: '⏰ Schedule Menu', callback_data: 'sch:menu' }]] },
+    reply_markup: { inline_keyboard: [[coloredBtn('⏰ Schedule Menu', 'sch:menu', 0, 'primary')]] },
   }).catch(() => {});
 });
 
@@ -10437,28 +10534,41 @@ bot.on('text', async (ctx, next) => {
       return;
     }
     const time = `${String(p.h).padStart(2, '0')}:${String(p.m).padStart(2, '0')}`;
-    (w as any).time = time;
+    w.time = time;
     w.step = 'count';
     scheduleWizard.set(ctx.from.id, w);
-    const available = await getAvailablePlayCount(ctx.from.id, w.game!);
-    if (available <= 0) {
-      await ctx.reply(
-        `❌ လက်ရှိ ကစားခွင့် မရှိသေးပါ။ ကူပွန်/turns ရပြီးမှ ထည့်ပါ။`,
-        { parse_mode: 'HTML' }
-      );
-      return;
-    }
-    await ctx.reply(
-      `✅ အချိန်: <code>${time}</code>\nလက်ကျန်: <b>${available}</b>\n\nဘယ်နှစ်ပွဲ? button နှိပ်ပါ။`,
-      {
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: buildCountButtons(available) },
-      }
-    );
+    await goToCountStep(ctx, { game: w.game!, time }, false);
     return;
   }
 
-  if (w.step === 'count' && (w as any).time && w.game) {
+  if (w.step === 'minute' && w.game && w.hour !== undefined) {
+    const n = parseInt(text, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 59) {
+      await ctx.reply(
+        `❌ မိနစ်သည် <b>1</b> မှ <b>59</b> အတွင်း ဖြစ်ရပါမယ်။\n` +
+          `ဥပမာ: <code>30</code>\n\n` +
+          `မိနစ် မသတ်မှတ်ချင်ရင် <b>ဆက်လုပ်မည်</b> button ကို နှိပ်ပါ။`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [coloredBtn('➡️ ဆက်လုပ်မည် (မိနစ် မသတ်မှတ်)', 'sch:min:skip', 0, 'success')],
+            ],
+          },
+        }
+      );
+      return;
+    }
+    const time = `${String(w.hour).padStart(2, '0')}:${String(n).padStart(2, '0')}`;
+    w.time = time;
+    w.step = 'count';
+    scheduleWizard.set(ctx.from.id, w);
+    await ctx.reply(`✅ အချိန် သတ်မှတ်ပြီး: <code>${time}</code>`, { parse_mode: 'HTML' });
+    await goToCountStep(ctx, { game: w.game, time }, false);
+    return;
+  }
+
+  if (w.step === 'count' && w.time && w.game) {
     const n = parseInt(text, 10);
     if (!Number.isFinite(n) || n < 1 || n > 50) {
       await ctx.reply('❌ 1–50 ဂဏန်း ထည့်ပါ (သို့မဟုတ် button နှိပ်ပါ)');
@@ -10469,9 +10579,9 @@ bot.on('text', async (ctx, next) => {
       tgUserId: ctx.from.id,
       chatId: ctx.chat.id,
       game: w.game,
-      time: (w as any).time,
+      time: w.time!,
       count: n,
-      nextRunAt: nextRunIsoFromHHMM((w as any).time),
+      nextRunAt: nextRunIsoFromHHMM(w.time!),
       enabled: true,
       createdAt: new Date().toISOString(),
     };
