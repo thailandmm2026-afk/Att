@@ -3164,31 +3164,77 @@ function isTokenExpired(res: any): boolean {
   return false;
 }
 
-async function performTokenRefresh(tgUserId: number, sess: any): Promise<any> {
-    const endpoints = [
-      `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${sess.msisdn}&userid=${sess.userId || -1}&v=4.16.0`,
-      `/mytmapi/v1/my/auth/refresh-token?msisdn=${sess.msisdn}&userid=${sess.userId || -1}&v=4.16.0`,
-      `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${sess.msisdn}&userid=-1&v=4.16.0`
-    ];
-    
-    for (const url of endpoints) {
-        let res = await atomApiPost(url, { refresh_token: sess.refreshToken }, {}, 1);
-        if (!res || res.status !== 'success') {
-           res = await atomApiPost(url, { refreshToken: sess.refreshToken }, {}, 1);
-        }
-        if (res && res.status === 'success' && res.data?.attribute) {
-            const payload = res.data.attribute;
-            const newSess = {
-              token: payload.token || sess.token,
-              msisdn: payload.msisdn || sess.msisdn,
-              userId: payload.user_id || sess.userId,
-              refreshToken: payload.refresh_token || sess.refreshToken
-            };
-            await saveSession(tgUserId, newSess);
-            return newSess;
-        }
-    }
+async function performTokenRefresh(
+  tgUserId: number,
+  sess: any
+): Promise<any> {
+  if (!sess?.msisdn || !sess?.refreshToken) {
+    console.error("[ATOM] Missing msisdn or refresh token");
     return null;
+  }
+
+  const userId = sess.userId ?? -1;
+  const version = "4.16.2";
+
+  const endpoints = [
+    `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${userId}&v=${version}`,
+    `/mytmapi/v1/my/auth/refresh-token?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${userId}&v=${version}`,
+    `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${encodeURIComponent(sess.msisdn)}&userid=-1&v=${version}`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      let res = await atomApiPost(
+        url,
+        { refresh_token: sess.refreshToken },
+        {},
+        1
+      );
+
+      if (!res || res.status !== "success") {
+        res = await atomApiPost(
+          url,
+          { refreshToken: sess.refreshToken },
+          {},
+          1
+        );
+      }
+
+      if (res?.status !== "success") {
+        console.warn("[ATOM] Refresh attempt failed:", {
+          endpoint: url,
+          status: res?.status,
+          message: res?.message,
+        });
+        continue;
+      }
+
+      const payload = res.data?.attribute;
+
+      if (!payload?.token) {
+        console.warn("[ATOM] Refresh response has no token:", res);
+        continue;
+      }
+
+      const newSess = {
+        ...sess,
+        token: payload.token,
+        msisdn: payload.msisdn || sess.msisdn,
+        userId: payload.user_id ?? sess.userId,
+        refreshToken: payload.refresh_token || sess.refreshToken,
+      };
+
+      await saveSession(tgUserId, newSess);
+
+      console.log("[ATOM] Token refresh successful");
+      return newSess;
+    } catch (error: any) {
+      console.error("[ATOM] Refresh request failed:", error?.message || error);
+    }
+  }
+
+  console.error("[ATOM] All refresh endpoints failed");
+  return null;
 }
 
 async function authApiGet(tgUserId: number, endpoint: string, customHeaders: any = {}) {
