@@ -7597,10 +7597,31 @@ bot.hears('💰 လက်ကျန်ငွေစစ်ရန်', async (ctx) =
   );
 
   try {
-    const res = await authApiGet(
-      ctx.from.id,
-      `/mytmapi/v1/my/lightweight-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
-    );
+    const msisdn = encodeURIComponent(sess.msisdn || '');
+    const userid = encodeURIComponent(sess.userId || '');
+    // OTP login works with v=4.13.0 — try same version first
+    const endpoints = [
+      `/mytmapi/v1/my/lightweight-balance?msisdn=${msisdn}&userid=${userid}&v=4.13.0`,
+      `/mytmapi/v1/my/lightweight-balance?msisdn=${msisdn}&userid=${userid}&v=4.16.2`,
+      `/mytmapi/v1/my/balance?msisdn=${msisdn}&userid=${userid}&v=4.13.0`,
+      `/mytmapi/v1/my/balance?msisdn=${msisdn}&userid=${userid}&v=4.16.2`,
+      `/mytmapi/v1/my/account/balance?msisdn=${msisdn}&userid=${userid}&v=4.13.0`,
+      `/mytmapi/v1/my/dashboard?msisdn=${msisdn}&userid=${userid}&v=4.13.0`,
+    ];
+
+    let res: any = null;
+    for (const ep of endpoints) {
+      res = await authApiGet(ctx.from.id, ep);
+      console.error(
+        '[ATOM balance]',
+        ep.split('?')[0],
+        res?.status,
+        res?._httpStatus || '',
+        JSON.stringify(res)?.slice(0, 250)
+      );
+      if (res?._authFailed) break;
+      if (res?.status === 'success') break;
+    }
 
     await ctx.telegram
       .deleteMessage(ctx.chat.id, waitMsg.message_id)
@@ -7620,22 +7641,35 @@ bot.hears('💰 လက်ကျန်ငွေစစ်ရန်', async (ctx) =
 
     // Success
     if (res?.status === 'success') {
-      const attr = res.data?.attribute || {};
+      const attr = res.data?.attribute || res.data || {};
 
       const mb = Number(
-        attr.mainBalance?.value ?? 0
+        attr.mainBalance?.value ??
+          attr.mainBalance?.amount ??
+          attr.balance ??
+          attr.main_balance ??
+          0
       );
 
       const dataPack = Number(
-        attr.packsPieData?.data?.remaining ?? 0
+        attr.packsPieData?.data?.remaining ??
+          attr.data?.remaining ??
+          attr.dataBalance ??
+          0
       );
 
       const voicePack = Number(
-        attr.packsPieData?.voice?.remaining ?? 0
+        attr.packsPieData?.voice?.remaining ??
+          attr.voice?.remaining ??
+          attr.voiceBalance ??
+          0
       );
 
       const smsPack = Number(
-        attr.packsPieData?.sms?.remaining ?? 0
+        attr.packsPieData?.sms?.remaining ??
+          attr.sms?.remaining ??
+          attr.smsBalance ??
+          0
       );
 
       const message =
@@ -7709,9 +7743,22 @@ bot.hears('📊 ပွိုင့်စစ်ရန်', async (ctx) => {
   );
 
   try {
-    const res = await authApiGet(
+    const msisdn = encodeURIComponent(sess.msisdn || '');
+    const userid = encodeURIComponent(sess.userId || '');
+    let res = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/point-system/dashboard?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
+      `/mytmapi/v1/my/point-system/dashboard?msisdn=${msisdn}&userid=${userid}&v=4.13.0`
+    );
+    if (!res || res.status !== 'success') {
+      res = await authApiGet(
+        ctx.from.id,
+        `/mytmapi/v1/my/point-system/dashboard?msisdn=${msisdn}&userid=${userid}&v=4.16.2`
+      );
+    }
+    console.error(
+      '[ATOM points]',
+      res?.status,
+      JSON.stringify(res)?.slice(0, 250)
     );
 
     await ctx.telegram
