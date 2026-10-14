@@ -7838,6 +7838,72 @@ bot.hears('📊 ပွိုင့်စစ်ရန်', async (ctx) => {
   }
 });
 
+/** Parse TohToh / GoldenFarm coupon count from various response shapes */
+function parseCouponCount(res: any, game: 'tohtoh' | 'goldenfarm'): number {
+  const attr = res?.data?.attribute || res?.attribute || res?.data || {};
+  const candidates: any[] = [];
+  if (game === 'tohtoh') {
+    candidates.push(
+      attr.couponBalance?.totalCoupon,
+      attr.toTohBalance?.totalCoupon,
+      attr.preCouponBalance?.totalCoupon,
+      attr.totalCoupon,
+      attr.couponBalance,
+      attr.remainingCoupon,
+      attr.coupon
+    );
+  } else {
+    candidates.push(
+      attr.couponBalance,
+      attr.couponBalance?.totalCoupon,
+      attr.totalCoupon,
+      attr.remainingCoupon,
+      attr.coupon
+    );
+  }
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue;
+    if (typeof c === 'object') {
+      const n = Number(c.totalCoupon ?? c.remaining ?? c.value ?? c.balance);
+      if (Number.isFinite(n)) return n;
+      continue;
+    }
+    const n = Number(c);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+async function fetchCouponBalance(
+  tgUserId: number,
+  game: 'tohtoh' | 'goldenfarm'
+): Promise<any> {
+  const sess = await getSession(tgUserId);
+  if (!sess) return null;
+  const msisdn = encodeURIComponent(sess.msisdn || '');
+  const userid = encodeURIComponent(sess.userId || '');
+  const path =
+    game === 'tohtoh'
+      ? '/mytmapi/v1/my/tohtohunited/get-coupon-balance'
+      : '/mytmapi/v1/my/goldenfarm/get-coupon-balance';
+  const versions = ['4.13.0', '4.16.2'];
+  let res: any = null;
+  for (const v of versions) {
+    res = await authApiGet(
+      tgUserId,
+      `${path}?msisdn=${msisdn}&userid=${userid}&v=${v}&_t=${Date.now()}`
+    );
+    console.error(
+      `[ATOM coupon ${game}] v=${v}`,
+      res?.status,
+      JSON.stringify(res?.data?.attribute || res)?.slice(0, 400)
+    );
+    if (res?._authFailed) return res;
+    if (res?.status === 'success') return res;
+  }
+  return res;
+}
+
 bot.hears('🎟️ TohToh ကူပွန်', async (ctx) => {
   const sess = await getSession(ctx.from.id);
 
@@ -7859,10 +7925,7 @@ bot.hears('🎟️ TohToh ကူပွန်', async (ctx) => {
   );
 
   try {
-    const res = await authApiGet(
-      ctx.from.id,
-      `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
-    );
+    const res = await fetchCouponBalance(ctx.from.id, 'tohtoh');
 
     await ctx.telegram
       .deleteMessage(ctx.chat.id, waitMsg.message_id)
@@ -7882,9 +7945,7 @@ bot.hears('🎟️ TohToh ကူပွန်', async (ctx) => {
 
     // Success
     if (res?.status === 'success') {
-      const count = Number(
-        res.data?.attribute?.couponBalance?.totalCoupon ?? 0
-      );
+      const count = parseCouponCount(res, 'tohtoh');
 
       const message =
         `${pe(PE.kiki, '🎟️')} <b>TohToh ကူပွန်အချက်အလက်</b>\n` +
@@ -7948,10 +8009,7 @@ bot.hears('🌾 ရွှေလယ်တော ကူပွန်', async (ctx) 
   );
 
   try {
-    const res = await authApiGet(
-      ctx.from.id,
-      `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
-    );
+    const res = await fetchCouponBalance(ctx.from.id, 'goldenfarm');
 
     await ctx.telegram
       .deleteMessage(ctx.chat.id, waitMsg.message_id)
@@ -7971,9 +8029,7 @@ bot.hears('🌾 ရွှေလယ်တော ကူပွန်', async (ctx) 
 
     // Success
     if (res?.status === 'success') {
-      const count = Number(
-        res.data?.attribute?.couponBalance ?? 0
-      );
+      const count = parseCouponCount(res, 'goldenfarm');
 
       const message =
         `${pe(PE.kiki, '🌾')} <b>ရွှေလယ်တော ကူပွန်အချက်အလက်</b>\n` +
@@ -8041,10 +8097,7 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
     );
 
     // Coupon / Dashboard စစ်ခြင်း
-    const dashRes = await authApiGet(
-      ctx.from.id,
-      `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
-    );
+    const dashRes = await fetchCouponBalance(ctx.from.id, 'tohtoh');
 
     // Token Expired
     if (dashRes?._authFailed) {
@@ -8078,9 +8131,7 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
     }
 
     // Coupon Count
-    const count = Number(
-      dashRes.data?.attribute?.couponBalance?.totalCoupon ?? 0
-    );
+    const count = parseCouponCount(dashRes, 'tohtoh');
 
     // No Coupon
     if (count <= 0) {
@@ -8260,10 +8311,7 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
     );
 
     // Coupon Balance စစ်ခြင်း
-    const dashRes = await authApiGet(
-      ctx.from.id,
-      `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
-    );
+    const dashRes = await fetchCouponBalance(ctx.from.id, 'goldenfarm');
 
     // Token Expired
     if (dashRes?._authFailed) {
@@ -8297,9 +8345,7 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
     }
 
     // Coupon Count
-    const count = Number(
-      dashRes.data?.attribute?.couponBalance ?? 0
-    );
+    const count = parseCouponCount(dashRes, 'goldenfarm');
 
     // No Coupon
     if (count <= 0) {
@@ -10375,13 +10421,10 @@ async function getUserSchedules(tgUserId: number): Promise<GameSchedule[]> {
 async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: string; message: string }> {
   const sess = await getSession(tgUserId);
   if (!sess) return { ok: false, message: 'ATOM login မရှိ' };
-  const dashRes = await authApiGet(
-    tgUserId,
-    `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
-  );
+  const dashRes = await fetchCouponBalance(tgUserId, 'tohtoh');
   if (dashRes?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (!dashRes || dashRes.status !== 'success') return { ok: false, message: 'TohToh dashboard error' };
-  const count = Number(dashRes.data?.attribute?.couponBalance?.totalCoupon ?? 0);
+  const count = parseCouponCount(dashRes, 'tohtoh');
   if (count <= 0) return { ok: false, message: 'coupon မကျန်' };
   let maxLevel = 3;
   if (Array.isArray(dashRes.data?.attribute?.levelData)) {
@@ -10420,13 +10463,10 @@ async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: 
 async function playGoldenFarmOnce(tgUserId: number): Promise<{ ok: boolean; prize?: string; message: string }> {
   const sess = await getSession(tgUserId);
   if (!sess) return { ok: false, message: 'ATOM login မရှိ' };
-  const dashRes = await authApiGet(
-    tgUserId,
-    `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
-  );
+  const dashRes = await fetchCouponBalance(tgUserId, 'goldenfarm');
   if (dashRes?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (!dashRes || dashRes.status !== 'success') return { ok: false, message: 'GoldenFarm dashboard error' };
-  const count = Number(dashRes.data?.attribute?.couponBalance ?? 0);
+  const count = parseCouponCount(dashRes, 'goldenfarm');
   if (count <= 0) return { ok: false, message: 'coupon မကျန်' };
   let maxScore = 165;
   const levelData = dashRes.data?.attribute?.levelData;
@@ -10662,24 +10702,14 @@ async function getAvailablePlayCount(
 ): Promise<number> {
   try {
     if (game === 'tohtoh') {
-      const sess = await getSession(tgUserId);
-      if (!sess) return 0;
-      const dashRes = await authApiGet(
-        tgUserId,
-        `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
-      );
+      const dashRes = await fetchCouponBalance(tgUserId, 'tohtoh');
       if (!dashRes || dashRes.status !== 'success' || dashRes._authFailed) return 0;
-      return Math.max(0, Number(dashRes.data?.attribute?.couponBalance?.totalCoupon ?? 0));
+      return Math.max(0, parseCouponCount(dashRes, 'tohtoh'));
     }
     if (game === 'goldenfarm') {
-      const sess = await getSession(tgUserId);
-      if (!sess) return 0;
-      const dashRes = await authApiGet(
-        tgUserId,
-        `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
-      );
+      const dashRes = await fetchCouponBalance(tgUserId, 'goldenfarm');
       if (!dashRes || dashRes.status !== 'success' || dashRes._authFailed) return 0;
-      return Math.max(0, Number(dashRes.data?.attribute?.couponBalance ?? 0));
+      return Math.max(0, parseCouponCount(dashRes, 'goldenfarm'));
     }
     if (game === 'ougame') {
       const my = await getMyIdSession(tgUserId);
