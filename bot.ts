@@ -3164,77 +3164,31 @@ function isTokenExpired(res: any): boolean {
   return false;
 }
 
-async function performTokenRefresh(
-  tgUserId: number,
-  sess: any
-): Promise<any> {
-  if (!sess?.msisdn || !sess?.refreshToken) {
-    console.error("[ATOM] Missing msisdn or refresh token");
-    return null;
-  }
-
-  const userId = sess.userId ?? -1;
-  const version = "4.16.2";
-
-  const endpoints = [
-    `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${userId}&v=${version}`,
-    `/mytmapi/v1/my/auth/refresh-token?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${userId}&v=${version}`,
-    `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${encodeURIComponent(sess.msisdn)}&userid=-1&v=${version}`,
-  ];
-
-  for (const url of endpoints) {
-    try {
-      let res = await atomApiPost(
-        url,
-        { refresh_token: sess.refreshToken },
-        {},
-        1
-      );
-
-      if (!res || res.status !== "success") {
-        res = await atomApiPost(
-          url,
-          { refreshToken: sess.refreshToken },
-          {},
-          1
-        );
-      }
-
-      if (res?.status !== "success") {
-        console.warn("[ATOM] Refresh attempt failed:", {
-          endpoint: url,
-          status: res?.status,
-          message: res?.message,
-        });
-        continue;
-      }
-
-      const payload = res.data?.attribute;
-
-      if (!payload?.token) {
-        console.warn("[ATOM] Refresh response has no token:", res);
-        continue;
-      }
-
-      const newSess = {
-        ...sess,
-        token: payload.token,
-        msisdn: payload.msisdn || sess.msisdn,
-        userId: payload.user_id ?? sess.userId,
-        refreshToken: payload.refresh_token || sess.refreshToken,
-      };
-
-      await saveSession(tgUserId, newSess);
-
-      console.log("[ATOM] Token refresh successful");
-      return newSess;
-    } catch (error: any) {
-      console.error("[ATOM] Refresh request failed:", error?.message || error);
+async function performTokenRefresh(tgUserId: number, sess: any): Promise<any> {
+    const endpoints = [
+      `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${sess.msisdn}&userid=${sess.userId || -1}&v=4.16.2`,
+      `/mytmapi/v1/my/auth/refresh-token?msisdn=${sess.msisdn}&userid=${sess.userId || -1}&v=4.16.2`,
+      `/mytmapi/v1/my/local-auth/refresh-token?msisdn=${sess.msisdn}&userid=-1&v=4.16.2`
+    ];
+    
+    for (const url of endpoints) {
+        let res = await atomApiPost(url, { refresh_token: sess.refreshToken }, {}, 1);
+        if (!res || res.status !== 'success') {
+           res = await atomApiPost(url, { refreshToken: sess.refreshToken }, {}, 1);
+        }
+        if (res && res.status === 'success' && res.data?.attribute) {
+            const payload = res.data.attribute;
+            const newSess = {
+              token: payload.token || sess.token,
+              msisdn: payload.msisdn || sess.msisdn,
+              userId: payload.user_id || sess.userId,
+              refreshToken: payload.refresh_token || sess.refreshToken
+            };
+            await saveSession(tgUserId, newSess);
+            return newSess;
+        }
     }
-  }
-
-  console.error("[ATOM] All refresh endpoints failed");
-  return null;
+    return null;
 }
 
 async function authApiGet(tgUserId: number, endpoint: string, customHeaders: any = {}) {
@@ -3406,7 +3360,7 @@ const authWizard = new Scenes.WizardScene<any>(
         );
 
         const res = await atomApiPost(
-          '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.0',
+          '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.2',
           {
             msisdn: phone,
           }
@@ -3573,7 +3527,7 @@ const authWizard = new Scenes.WizardScene<any>(
         );
 
         const res = await atomApiPost(
-          '/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.0',
+          '/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.2',
           {
             msisdn: phone,
             code: otpCode,
@@ -7421,7 +7375,7 @@ bot.hears('💰 လက်ကျန်ငွေစစ်ရန်', async (ctx) =
   try {
     const res = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/lightweight-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`
+      `/mytmapi/v1/my/lightweight-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
     );
 
     await ctx.telegram
@@ -7533,7 +7487,7 @@ bot.hears('📊 ပွိုင့်စစ်ရန်', async (ctx) => {
   try {
     const res = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/point-system/dashboard?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`
+      `/mytmapi/v1/my/point-system/dashboard?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
     );
 
     await ctx.telegram
@@ -7636,7 +7590,7 @@ bot.hears('🎟️ TohToh ကူပွန်', async (ctx) => {
   try {
     const res = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`
+      `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
     );
 
     await ctx.telegram
@@ -7725,7 +7679,7 @@ bot.hears('🌾 ရွှေလယ်တော ကူပွန်', async (ctx) 
   try {
     const res = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`
+      `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
     );
 
     await ctx.telegram
@@ -7818,7 +7772,7 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
     // Coupon / Dashboard စစ်ခြင်း
     const dashRes = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+      `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
     );
 
     // Token Expired
@@ -7894,7 +7848,7 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
     // Game Draw
     const res = await authApiPost(
       ctx.from.id,
-      `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`,
+      `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
       bodyObj
     );
 
@@ -8037,7 +7991,7 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
     // Coupon Balance စစ်ခြင်း
     const dashRes = await authApiGet(
       ctx.from.id,
-      `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+      `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
     );
 
     // Token Expired
@@ -8130,7 +8084,7 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
     // Golden Farm Draw
     const res = await authApiPost(
       ctx.from.id,
-      `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`,
+      `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
       bodyObj
     );
 
@@ -8286,7 +8240,7 @@ bot.hears(
 
       const getPackRes = await authApiGet(
         ctx.from.id,
-        `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`
+        `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`
       );
 
       await ctx.telegram
@@ -8429,7 +8383,7 @@ bot.action(/buy_tohtoh_(.+)/, async (ctx) => {
   const waitMsg = await ctx.reply("⏳ ခနစောင့်ပေးပါ...");
 
   const bodyObj = { offerId };
-  const buyRes = await authApiPost(ctx.from.id, `/mytmapi/v1/my/tohtohunited/purchase-game-pack-life?msisdn=${sess.msisdn}&userid=${sess.userId}&v=4.16.0`, bodyObj);
+  const buyRes = await authApiPost(ctx.from.id, `/mytmapi/v1/my/tohtohunited/purchase-game-pack-life?msisdn=${sess.msisdn}&userid=${sess.userId}&v=4.16.2`, bodyObj);
 
   await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
 
@@ -8440,7 +8394,7 @@ bot.action(/buy_tohtoh_(.+)/, async (ctx) => {
 
   if (buyRes && buyRes.status === 'success') {
      // Fetch the updated balance to show
-     const getPackRes = await authApiGet(ctx.from.id, `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${sess.msisdn}&userid=${sess.userId}&v=4.16.0`);
+     const getPackRes = await authApiGet(ctx.from.id, `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${sess.msisdn}&userid=${sess.userId}&v=4.16.2`);
      let remain = '-';
      if (getPackRes && getPackRes.status === 'success') {
         remain = getPackRes.data?.attribute?.couponBalance?.totalCoupon ?? getPackRes.data?.attribute?.couponBalance ?? getPackRes.data?.attribute?.toTohBalance?.totalCoupon ?? '-';
@@ -8504,7 +8458,7 @@ bot.hears(
         ctx.from.id,
         `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(
           sess.msisdn
-        )}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+        )}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
       );
 
       await ctx.telegram
@@ -8601,7 +8555,7 @@ bot.action('buy_goldenfarm', async (ctx) => {
       ctx.from.id,
       `/mytmapi/v1/my/goldenfarm/purchase-life?msisdn=${encodeURIComponent(
         sess.msisdn
-      )}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+      )}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
     );
 
     await ctx.telegram
@@ -8625,7 +8579,7 @@ bot.action('buy_goldenfarm', async (ctx) => {
         ctx.from.id,
         `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(
           sess.msisdn
-        )}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+        )}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
       );
 
       let remain: number | string = '-';
@@ -8745,7 +8699,7 @@ bot.hears('🎁 Daily Point Claim', async (ctx) => {
     const baseQuery =
       `msisdn=${encodeURIComponent(sess.msisdn)}` +
       `&userid=${encodeURIComponent(sess.userId)}` +
-      `&v=4.16.0&_t=${Date.now()}`;
+      `&v=4.16.2&_t=${Date.now()}`;
 
     // Initialize / refresh point information
     const initEndpoints = [
@@ -9062,7 +9016,7 @@ bot.action(/claim_point_(.+)/, async (ctx) => {
     const baseQuery =
       `msisdn=${encodeURIComponent(sess.msisdn)}` +
       `&userid=${encodeURIComponent(sess.userId)}` +
-      `&v=4.16.0&_t=${Date.now()}`;
+      `&v=4.16.2&_t=${Date.now()}`;
 
     // v1 first
     let claimRes = await authApiPost(
@@ -10152,7 +10106,7 @@ async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: 
   if (!sess) return { ok: false, message: 'ATOM login မရှိ' };
   const dashRes = await authApiGet(
     tgUserId,
-    `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+    `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
   );
   if (dashRes?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (!dashRes || dashRes.status !== 'success') return { ok: false, message: 'TohToh dashboard error' };
@@ -10167,7 +10121,7 @@ async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: 
   }
   const res = await authApiPost(
     tgUserId,
-    `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`,
+    `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
     { isCompleted: 1, currentPlayLevel: maxLevel, chosenPrize: 'Instant' }
   );
   setGameCooldown(tgUserId);
@@ -10197,7 +10151,7 @@ async function playGoldenFarmOnce(tgUserId: number): Promise<{ ok: boolean; priz
   if (!sess) return { ok: false, message: 'ATOM login မရှိ' };
   const dashRes = await authApiGet(
     tgUserId,
-    `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+    `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
   );
   if (dashRes?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (!dashRes || dashRes.status !== 'success') return { ok: false, message: 'GoldenFarm dashboard error' };
@@ -10216,7 +10170,7 @@ async function playGoldenFarmOnce(tgUserId: number): Promise<{ ok: boolean; priz
   const randomScore = Math.floor(Math.random() * (maxScore - minScore + 1)) + minScore;
   const res = await authApiPost(
     tgUserId,
-    `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0`,
+    `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
     { score: randomScore }
   );
   setGameCooldown(tgUserId);
@@ -10441,7 +10395,7 @@ async function getAvailablePlayCount(
       if (!sess) return 0;
       const dashRes = await authApiGet(
         tgUserId,
-        `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+        `/mytmapi/v1/my/tohtohunited/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
       );
       if (!dashRes || dashRes.status !== 'success' || dashRes._authFailed) return 0;
       return Math.max(0, Number(dashRes.data?.attribute?.couponBalance?.totalCoupon ?? 0));
@@ -10451,7 +10405,7 @@ async function getAvailablePlayCount(
       if (!sess) return 0;
       const dashRes = await authApiGet(
         tgUserId,
-        `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.0&_t=${Date.now()}`
+        `/mytmapi/v1/my/goldenfarm/get-coupon-balance?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2&_t=${Date.now()}`
       );
       if (!dashRes || dashRes.status !== 'success' || dashRes._authFailed) return 0;
       return Math.max(0, Number(dashRes.data?.attribute?.couponBalance ?? 0));
