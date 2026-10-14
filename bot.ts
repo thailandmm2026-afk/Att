@@ -3127,37 +3127,131 @@ const botHttpsAgent = new https.Agent({
 });
 
 async function atomApiPost(endpoint: string, data: any, headers: any = {}, retries = 3) {
-  const url = `https://store.atom.com.mm${endpoint}`;
+  const url = endpoint.startsWith('http')
+    ? endpoint
+    : `https://store.atom.com.mm${endpoint}`;
   for (let i = 0; i < retries; i++) {
     try {
-      const payload = typeof data === 'string' ? data : JSON.stringify(data);
       const res = await axios({
         httpsAgent: botHttpsAgent,
-        method: "POST",
-        url: url,
-        data: payload,
-        headers: { ...COMMON_HEADERS, "Content-Type": "application/json", ...headers },
+        method: 'POST',
+        url,
+        data, // let axios handle JSON stringify
+        headers: {
+          ...COMMON_HEADERS,
+          'Content-Type': 'application/json',
+          ...headers,
+        },
         validateStatus: () => true,
-        timeout: 15000,
+        timeout: 20000,
+        maxRedirects: 0,
       });
-      // Attach HTTP status for debugging when body is empty
-      if (res.data == null || res.data === '') {
-        console.error('atomApiPost empty body HTTP', res.status, url.slice(0, 80));
+      const body = res.data;
+      if (body == null || body === '') {
+        console.error('atomApiPost empty HTTP', res.status, url.slice(0, 100));
         return { status: 'http_' + res.status, _httpStatus: res.status, data: null };
       }
-      if (typeof res.data === 'object' && res.data !== null && res.status && !res.data._httpStatus) {
-        // keep original body; only log non-2xx
-        if (res.status >= 400) {
-          console.error('atomApiPost HTTP', res.status, JSON.stringify(res.data)?.slice(0, 300));
-        }
+      if (
+        typeof body === 'object' &&
+        !Array.isArray(body) &&
+        Object.keys(body).length === 0
+      ) {
+        console.error('atomApiPost empty-object HTTP', res.status, url.slice(0, 100));
+        return { status: 'empty', _httpStatus: res.status, data: null };
       }
-      return res.data;
+      if (res.status >= 400) {
+        console.error('atomApiPost HTTP', res.status, JSON.stringify(body)?.slice(0, 300));
+      }
+      return body;
     } catch (e: any) {
       if (i === retries - 1) {
-        console.error("atomApiPost error:", e.response?.status, e.response?.data || e.message);
+        console.error('atomApiPost error:', e.response?.status, e.response?.data || e.message);
         return null;
       }
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  return null;
+}
+
+/** Atom OTP verify — multiple payload/header formats + HTTP status logging */
+async function atomVerifyOtpRequest(
+  msisdn: string,
+  codeJwt: string,
+  otp6: string
+): Promise<any> {
+  const base = 'https://store.atom.com.mm';
+  const otp = String(otp6).replace(/\D/g, '');
+  const code = String(codeJwt || '');
+  const phone09 = msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
+
+  const variants: Array<{ label: string; url: string; data: any; headers?: any }> = [
+    {
+      label: 'json-qs-msisdn',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+      data: { msisdn, code, otp },
+    },
+    {
+      label: 'json-empty-qs',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.2`,
+      data: { msisdn, code, otp },
+    },
+    {
+      label: 'json-bearer',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+      data: { msisdn, otp },
+      headers: { Authorization: `Bearer ${code}` },
+    },
+    {
+      label: 'form-urlencoded',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+      data: new URLSearchParams({ msisdn, code, otp }).toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    },
+    {
+      label: 'json-09',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(phone09)}&userid=-1&v=4.16.2`,
+      data: { msisdn: phone09, code, otp },
+    },
+    {
+      label: 'json-otp-num',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+      data: { msisdn, code, otp: Number(otp) },
+    },
+    {
+      label: 'v4.13',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.13.0`,
+      data: { msisdn, code, otp },
+    },
+  ];
+
+  for (const v of variants) {
+    try {
+      const res = await axios({
+        httpsAgent: botHttpsAgent,
+        method: 'POST',
+        url: v.url,
+        data: v.data,
+        headers: {
+          ...COMMON_HEADERS,
+          Accept: 'application/json, text/plain, */*',
+          'Content-Type': 'application/json',
+          ...(v.headers || {}),
+        },
+        validateStatus: () => true,
+        timeout: 20000,
+        maxRedirects: 0,
+      });
+      const body = res.data;
+      const preview =
+        typeof body === 'string' ? body.slice(0, 200) : JSON.stringify(body)?.slice(0, 300);
+      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} body=${preview}`);
+      if (body && typeof body === 'object') {
+        if (body.status === 'success' && body.data?.attribute) return body;
+        if (body.token || body.data?.token || body.attribute?.token) return body;
+      }
+    } catch (e: any) {
+      console.error(`[ATOM verify-try] ${v.label} ERR`, e.response?.status, e.message);
     }
   }
   return null;
@@ -3604,7 +3698,7 @@ const authWizard = new Scenes.WizardScene<any>(
           }
         );
 
-        // Server send-otp returns msisdn as 959… — use that first
+        // Server send-otp returns msisdn as 959… — normalize to that
         let msisdn = String(phone || '').replace(/\D/g, '');
         if (msisdn.startsWith('0') && msisdn.length >= 10) {
           msisdn = '95' + msisdn.slice(1);
@@ -3612,8 +3706,6 @@ const authWizard = new Scenes.WizardScene<any>(
         if (!msisdn.startsWith('95') && msisdn.startsWith('9')) {
           msisdn = '95' + msisdn;
         }
-        const phone09 =
-          msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
 
         console.error(
           '[ATOM verify-otp] input otpLen=',
@@ -3626,51 +3718,16 @@ const authWizard = new Scenes.WizardScene<any>(
           otp
         );
 
-        // Primary body matching official app: msisdn (959) + code (JWT) + otp (6 digits)
-        const bodies: Array<{ body: any; qs: string }> = [
-          {
-            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-            body: { msisdn, code: otpCode, otp: String(otp) },
-          },
-          {
-            qs: `msisdn=&userid=-1&v=4.16.2`,
-            body: { msisdn, code: otpCode, otp: String(otp) },
-          },
-          {
-            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-            body: { msisdn, code: String(otpCode), otp: String(otp) },
-          },
-          {
-            qs: `msisdn=${encodeURIComponent(phone09)}&userid=-1&v=4.16.2`,
-            body: { msisdn: phone09, code: otpCode, otp: String(otp) },
-          },
-          {
-            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-            body: { msisdn, otpId: otpCode, otp: String(otp) },
-          },
-          {
-            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-            body: { msisdn, code: otpCode, otpCode: String(otp), otp: String(otp) },
-          },
-        ];
-
-        let res: any = null;
-        for (const item of bodies) {
-          res = await atomApiPost(
-            `/mytmapi/v1/my/local-auth/verify-otp?${item.qs}`,
-            item.body
-          );
-          console.error(
-            '[ATOM verify-otp]',
-            item.body.msisdn,
-            Object.keys(item.body).join(','),
-            'status=',
-            res?.status,
-            'body=',
-            JSON.stringify(res)?.slice(0, 400)
-          );
-          if (res && res.status === 'success' && res.data?.attribute) break;
-        }
+        // Try multiple request formats (JSON / form / Bearer)
+        let res: any = await atomVerifyOtpRequest(msisdn, String(otpCode), String(otp));
+        console.error(
+          '[ATOM verify-otp] final status=',
+          res?.status,
+          'keys=',
+          res ? Object.keys(res).join(',') : 'null',
+          'body=',
+          JSON.stringify(res)?.slice(0, 400)
+        );
 
         await ctx.telegram
           .deleteMessage(
@@ -3679,22 +3736,23 @@ const authWizard = new Scenes.WizardScene<any>(
           )
           .catch(() => {});
 
-        if (
-          res &&
-          res.status === 'success' &&
-          res.data?.attribute
-        ) {
-          const payload = res.data.attribute;
+        const payload =
+          res?.data?.attribute ||
+          res?.attribute ||
+          (res?.token ? res : null) ||
+          res?.data ||
+          null;
 
+        if (payload && (payload.token || res?.status === 'success')) {
           await saveSession(ctx.from.id, {
-            token: payload.token,
+            token: payload.token || res.token,
             msisdn: payload.msisdn || phone,
-            userId: payload.user_id,
+            userId: payload.user_id || payload.userId,
             subscriberId:
               payload.subscriber_id ||
               payload.subscriberId ||
               payload.accountId,
-            refreshToken: payload.refresh_token,
+            refreshToken: payload.refresh_token || payload.refreshToken,
             fullPayload: payload,
           });
 
