@@ -3185,42 +3185,16 @@ async function atomVerifyOtpRequest(
   const code = String(codeJwt || '');
   const phone09 = msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
 
+  // v=4.13.0 works (returns MyTM-token) — try first only
   const variants: Array<{ label: string; url: string; data: any; headers?: any }> = [
-    {
-      label: 'json-qs-msisdn',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-      data: { msisdn, code, otp },
-    },
-    {
-      label: 'json-empty-qs',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.2`,
-      data: { msisdn, code, otp },
-    },
-    {
-      label: 'json-bearer',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-      data: { msisdn, otp },
-      headers: { Authorization: `Bearer ${code}` },
-    },
-    {
-      label: 'form-urlencoded',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-      data: new URLSearchParams({ msisdn, code, otp }).toString(),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    },
-    {
-      label: 'json-09',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(phone09)}&userid=-1&v=4.16.2`,
-      data: { msisdn: phone09, code, otp },
-    },
-    {
-      label: 'json-otp-num',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
-      data: { msisdn, code, otp: Number(otp) },
-    },
     {
       label: 'v4.13',
       url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.13.0`,
+      data: { msisdn, code, otp },
+    },
+    {
+      label: 'v4.13-empty-qs',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.13.0`,
       data: { msisdn, code, otp },
     },
   ];
@@ -3244,11 +3218,18 @@ async function atomVerifyOtpRequest(
       });
       const body = res.data;
       const preview =
-        typeof body === 'string' ? body.slice(0, 200) : JSON.stringify(body)?.slice(0, 300);
+        typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body)?.slice(0, 800);
       console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} body=${preview}`);
-      if (body && typeof body === 'object') {
-        if (body.status === 'success' && body.data?.attribute) return body;
-        if (body.token || body.data?.token || body.attribute?.token) return body;
+      if (body && typeof body === 'object' && body.status === 'success') {
+        // Log nested keys so we can see where token lives
+        const d = body.data || {};
+        console.error(
+          '[ATOM verify-try] data.keys=',
+          Object.keys(d).join(','),
+          'attr.keys=',
+          d.attribute ? Object.keys(d.attribute).join(',') : 'none'
+        );
+        return body;
       }
     } catch (e: any) {
       console.error(`[ATOM verify-try] ${v.label} ERR`, e.response?.status, e.message);
@@ -3736,24 +3717,59 @@ const authWizard = new Scenes.WizardScene<any>(
           )
           .catch(() => {});
 
-        const payload =
-          res?.data?.attribute ||
-          res?.attribute ||
-          (res?.token ? res : null) ||
-          res?.data ||
-          null;
+        // MyTM-token response: token may be in data.attribute or nested
+        const attr = res?.data?.attribute || res?.attribute || {};
+        const dataObj = res?.data || {};
+        const findToken = (...objs: any[]) => {
+          for (const o of objs) {
+            if (!o || typeof o !== 'object') continue;
+            const t =
+              o.token ||
+              o.access_token ||
+              o.accessToken ||
+              o.authToken ||
+              o.jwt;
+            if (t) return String(t);
+          }
+          return '';
+        };
+        const token = findToken(attr, dataObj, res);
+        const msisdnSaved =
+          attr.msisdn || dataObj.msisdn || phone || msisdn;
+        const userId =
+          attr.user_id ||
+          attr.userId ||
+          dataObj.user_id ||
+          dataObj.userId;
+        const subscriberId =
+          attr.subscriber_id ||
+          attr.subscriberId ||
+          attr.accountId ||
+          dataObj.subscriber_id;
+        const refreshToken =
+          attr.refresh_token ||
+          attr.refreshToken ||
+          dataObj.refresh_token;
 
-        if (payload && (payload.token || res?.status === 'success')) {
+        console.error(
+          '[ATOM verify OK?] tokenLen=',
+          token.length,
+          'msisdn=',
+          msisdnSaved,
+          'userId=',
+          userId,
+          'dataType=',
+          dataObj.type
+        );
+
+        if (res?.status === 'success' && token) {
           await saveSession(ctx.from.id, {
-            token: payload.token || res.token,
-            msisdn: payload.msisdn || phone,
-            userId: payload.user_id || payload.userId,
-            subscriberId:
-              payload.subscriber_id ||
-              payload.subscriberId ||
-              payload.accountId,
-            refreshToken: payload.refresh_token || payload.refreshToken,
-            fullPayload: payload,
+            token,
+            msisdn: msisdnSaved,
+            userId,
+            subscriberId,
+            refreshToken,
+            fullPayload: attr.token ? attr : dataObj,
           });
 
           await ctx.reply(
@@ -3765,6 +3781,14 @@ const authWizard = new Scenes.WizardScene<any>(
           );
 
           return ctx.scene.leave();
+        }
+
+        // success but no token in expected fields — log full body once
+        if (res?.status === 'success') {
+          console.error(
+            '[ATOM verify success but NO TOKEN] full=',
+            JSON.stringify(res)?.slice(0, 1500)
+          );
         }
 
         const errMsg =
