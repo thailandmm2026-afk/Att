@@ -3138,12 +3138,23 @@ async function atomApiPost(endpoint: string, data: any, headers: any = {}, retri
         data: payload,
         headers: { ...COMMON_HEADERS, "Content-Type": "application/json", ...headers },
         validateStatus: () => true,
-        timeout: 10000
+        timeout: 15000,
       });
+      // Attach HTTP status for debugging when body is empty
+      if (res.data == null || res.data === '') {
+        console.error('atomApiPost empty body HTTP', res.status, url.slice(0, 80));
+        return { status: 'http_' + res.status, _httpStatus: res.status, data: null };
+      }
+      if (typeof res.data === 'object' && res.data !== null && res.status && !res.data._httpStatus) {
+        // keep original body; only log non-2xx
+        if (res.status >= 400) {
+          console.error('atomApiPost HTTP', res.status, JSON.stringify(res.data)?.slice(0, 300));
+        }
+      }
       return res.data;
     } catch (e: any) {
       if (i === retries - 1) {
-        console.error("atomApiPost error:", e.response?.data || e.message);
+        console.error("atomApiPost error:", e.response?.status, e.response?.data || e.message);
         return null;
       }
       await new Promise(r => setTimeout(r, 1000));
@@ -3431,8 +3442,18 @@ const authWizard = new Scenes.WizardScene<any>(
           res.status === 'success' &&
           res.data?.attribute?.code
         ) {
-          ctx.wizard.state.otpCode = res.data.attribute.code;
-          ctx.wizard.state.phone = usedMsisdn;
+          // API returns msisdn as 959… — verify must use the SAME values
+          const attr = res.data.attribute;
+          ctx.wizard.state.otpCode = attr.code;
+          ctx.wizard.state.phone =
+            attr.msisdn || usedMsisdn; // prefer server msisdn (959…)
+          ctx.wizard.state.phoneDisplay = phone09;
+          console.error(
+            '[ATOM send-otp OK] serverMsisdn=',
+            attr.msisdn,
+            'codeLen=',
+            String(attr.code || '').length
+          );
 
           await ctx.reply(
             `${pe(PE.otp, '📨')} <b>OTP ပို့လိုက်ပါပြီ။</b>\n\n` +
@@ -3583,34 +3604,70 @@ const authWizard = new Scenes.WizardScene<any>(
           }
         );
 
-        // Try code + otpId field names and a few msisdn formats
-        let phone09 = String(phone || '').replace(/\D/g, '');
-        if (phone09.startsWith('959')) phone09 = '0' + phone09.slice(2);
-        if (!phone09.startsWith('0') && phone09.startsWith('9')) phone09 = '0' + phone09;
-        const phone95 = phone09.startsWith('0') ? '95' + phone09.slice(1) : phone09;
-        const phone9 = phone09.startsWith('0') ? phone09.slice(1) : phone09;
+        // Server send-otp returns msisdn as 959… — use that first
+        let msisdn = String(phone || '').replace(/\D/g, '');
+        if (msisdn.startsWith('0') && msisdn.length >= 10) {
+          msisdn = '95' + msisdn.slice(1);
+        }
+        if (!msisdn.startsWith('95') && msisdn.startsWith('9')) {
+          msisdn = '95' + msisdn;
+        }
+        const phone09 =
+          msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
 
-        const bodies: any[] = [
-          { msisdn: phone, code: otpCode, otp },
-          { msisdn: phone, otpId: otpCode, otp },
-          { msisdn: phone09, code: otpCode, otp },
-          { msisdn: phone95, code: otpCode, otp },
-          { msisdn: phone9, code: otpCode, otp },
-          { msisdn: phone95, otpId: otpCode, otp },
+        console.error(
+          '[ATOM verify-otp] input otpLen=',
+          String(otp).length,
+          'codeLen=',
+          String(otpCode).length,
+          'msisdn=',
+          msisdn,
+          'otp=',
+          otp
+        );
+
+        // Primary body matching official app: msisdn (959) + code (JWT) + otp (6 digits)
+        const bodies: Array<{ body: any; qs: string }> = [
+          {
+            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+            body: { msisdn, code: otpCode, otp: String(otp) },
+          },
+          {
+            qs: `msisdn=&userid=-1&v=4.16.2`,
+            body: { msisdn, code: otpCode, otp: String(otp) },
+          },
+          {
+            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+            body: { msisdn, code: String(otpCode), otp: String(otp) },
+          },
+          {
+            qs: `msisdn=${encodeURIComponent(phone09)}&userid=-1&v=4.16.2`,
+            body: { msisdn: phone09, code: otpCode, otp: String(otp) },
+          },
+          {
+            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+            body: { msisdn, otpId: otpCode, otp: String(otp) },
+          },
+          {
+            qs: `msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.16.2`,
+            body: { msisdn, code: otpCode, otpCode: String(otp), otp: String(otp) },
+          },
         ];
 
         let res: any = null;
-        for (const body of bodies) {
+        for (const item of bodies) {
           res = await atomApiPost(
-            '/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.2',
-            body
+            `/mytmapi/v1/my/local-auth/verify-otp?${item.qs}`,
+            item.body
           );
           console.error(
             '[ATOM verify-otp]',
-            body.msisdn,
-            Object.keys(body).join(','),
+            item.body.msisdn,
+            Object.keys(item.body).join(','),
+            'status=',
             res?.status,
-            JSON.stringify(res)?.slice(0, 500)
+            'body=',
+            JSON.stringify(res)?.slice(0, 400)
           );
           if (res && res.status === 'success' && res.data?.attribute) break;
         }
