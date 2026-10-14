@@ -53,74 +53,107 @@ interface MyIdSession {
 }
 
 class MyIdService {
+  /** Normalize to 09xxxxxxxx for MyID APIs */
+  static normalizePhone09(phone: string): string {
+    let d = String(phone || '').replace(/\D/g, '');
+    if (d.startsWith('959') && d.length >= 11) d = '0' + d.slice(2);
+    if (!d.startsWith('0') && d.startsWith('9')) d = '0' + d;
+    return d;
+  }
+
   static async sendOtp(phone: string): Promise<boolean> {
-    const clean = phone.replace(/\D/g, '');
-    const url = `https://apis.mytel.com.mm/myid/authen/v1.0/login/method/otp/get-otp?phoneNumber=${clean}`;
-    try {
-      const res = await axios.get(url, {
-        headers: MYID_HEADERS,
-        httpsAgent: myidHttpsAgent,
-        timeout: 15000,
-        validateStatus: () => true,
-      });
-      return res.status === 200;
-    } catch {
-      return false;
+    // Prefer 09xxxxxxxx — also try without leading 0 if needed
+    const phone09 = this.normalizePhone09(phone);
+    const candidates = [phone09, phone09.replace(/^0/, ''), phone09.replace(/^0/, '95')];
+    for (const clean of candidates) {
+      const url = `https://apis.mytel.com.mm/myid/authen/v1.0/login/method/otp/get-otp?phoneNumber=${clean}`;
+      try {
+        const res = await axios.get(url, {
+          headers: MYID_HEADERS,
+          httpsAgent: myidHttpsAgent,
+          timeout: 15000,
+          validateStatus: () => true,
+        });
+        console.error('[MyID sendOtp]', clean, res.status, JSON.stringify(res.data)?.slice(0, 200));
+        if (res.status === 200) return true;
+      } catch (e: any) {
+        console.error('[MyID sendOtp] error', clean, e?.message);
+      }
     }
+    return false;
   }
 
   static async verifyOtp(phone: string, otp: string): Promise<MyIdSession | null> {
-    const clean = phone.replace(/\D/g, '');
+    const phone09 = this.normalizePhone09(phone);
+    const candidates = [phone09, phone09.replace(/^0/, ''), phone09.replace(/^0/, '95')];
     const url = 'https://apis.mytel.com.mm/myid/authen/v1.0/login/method/otp/validate-otp';
-    const payload = {
-      phoneNumber: clean,
-      password: otp,
-      appVersion: '1.0.93',
-      buildVersionApp: '217',
-      deviceId: '0',
-      imei: '0',
-      os: 'MYID PRO PLUS',
-      osAp: 'IOS',
-      version: '1.5',
-    };
-    try {
-      const res = await axios.post(url, payload, {
-        headers: { ...MYID_HEADERS, 'Content-Type': 'application/json' },
-        httpsAgent: myidHttpsAgent,
-        timeout: 15000,
-        validateStatus: () => true,
-      });
-      if (res.data?.errorCode === 200 && res.data?.result) {
-        const result = res.data.result;
-        // access_token / accessToken / token / jwt — API field name ကွဲနိုင်
-        const token =
-          result.access_token ||
-          result.accessToken ||
-          result.token ||
-          result.jwt ||
-          result.id_token ||
-          result.idToken ||
-          '';
-        if (!token) {
-          console.error('MyID OTP ok but no token in result keys:', Object.keys(result || {}));
-          return null;
+
+    for (const clean of candidates) {
+      const payload = {
+        phoneNumber: clean,
+        password: otp,
+        appVersion: '1.0.93',
+        buildVersionApp: '217',
+        deviceId: '0',
+        imei: '0',
+        os: 'MYID PRO PLUS',
+        osAp: 'IOS',
+        version: '1.5',
+      };
+      try {
+        const res = await axios.post(url, payload, {
+          headers: { ...MYID_HEADERS, 'Content-Type': 'application/json' },
+          httpsAgent: myidHttpsAgent,
+          timeout: 15000,
+          validateStatus: () => true,
+        });
+        console.error(
+          '[MyID verifyOtp]',
+          clean,
+          res.status,
+          JSON.stringify(res.data)?.slice(0, 400)
+        );
+        const data = res.data;
+        const code = data?.errorCode ?? data?.code;
+        // MyTel uses 0 / '0' / '00000' / sometimes 200
+        const ok =
+          code === 0 ||
+          code === '0' ||
+          code === 200 ||
+          code === '200' ||
+          code === '00000';
+        if (ok && data?.result) {
+          const result = data.result;
+          const token =
+            result.access_token ||
+            result.accessToken ||
+            result.token ||
+            result.jwt ||
+            result.id_token ||
+            result.idToken ||
+            '';
+          if (!token) {
+            console.error('MyID OTP ok but no token in result keys:', Object.keys(result || {}));
+            continue;
+          }
+          // store phone without leading 0 for consistency with rest of bot
+          let storePhone = phone09.replace(/\D/g, '');
+          if (storePhone.startsWith('0')) storePhone = storePhone.slice(1);
+          return {
+            phone: storePhone,
+            access_token: String(token),
+            full_name: result.full_name || result.fullName || result.name || '',
+            avatar: result.avatar || 'https://s3.mytel.com.mm/myid-avatar/avatar/default.jpg',
+            subId: result.subId || result.sub_id || result.subscriberId
+              ? String(result.subId || result.sub_id || result.subscriberId)
+              : undefined,
+          };
         }
-        return {
-          phone: clean,
-          access_token: String(token),
-          full_name: result.full_name || result.fullName || result.name || '',
-          avatar: result.avatar || 'https://s3.mytel.com.mm/myid-avatar/avatar/default.jpg',
-          subId: result.subId || result.sub_id || result.subscriberId
-            ? String(result.subId || result.sub_id || result.subscriberId)
-            : undefined,
-        };
+      } catch (e: any) {
+        console.error('MyID verifyOtp exception:', e?.message || e);
       }
-      console.error('MyID verifyOtp failed:', res.status, JSON.stringify(res.data)?.slice(0, 300));
-      return null;
-    } catch (e: any) {
-      console.error('MyID verifyOtp exception:', e?.message || e);
-      return null;
     }
+    return null;
   }
 
   static async getGameToken(session: MyIdSession): Promise<string | null> {
@@ -3263,7 +3296,10 @@ const authWizard = new Scenes.WizardScene<any>(
     try {
       await ctx.reply(
         `${pe(PE.atom, '📲')} <b>ဖုန်းနံပါတ်လေး ရိုက်ထည့်ပေးပါဗျ။</b>\n\n` +
-        `${pe(PE.notification, '📱')} ဥပမာ - <code>097xxxxxxx</code>\n\n` +
+        `${pe(PE.notification, '📱')} ဥပမာ:\n` +
+        `• <code>09123456789</code>\n` +
+        `• <code>9123456789</code>\n` +
+        `• <code>959123456789</code>\n\n` +
         `${pe(PE.check, '❌')} မလုပ်လိုပါက <code>/cancel</code> ကိုနှိပ်ပါ။`,
         {
           parse_mode: 'HTML',
@@ -3324,22 +3360,22 @@ const authWizard = new Scenes.WizardScene<any>(
         );
       }
 
-      // Normalize phone
-      let phone = text.replace(/\D/g, '');
-
-      if (phone.startsWith('95')) {
-        phone = phone.slice(2);
+      // Normalize phone — 09… / 9… / 959… / +959… အားလုံး လက်ခံ
+      let digits = text.replace(/\D/g, '');
+      if (digits.startsWith('959') && digits.length >= 11) {
+        digits = '0' + digits.slice(2);
       }
-
-      if (phone.startsWith('09')) {
-        phone = phone.slice(1);
+      if (!digits.startsWith('0') && digits.startsWith('9')) {
+        digits = '0' + digits;
       }
-
-      // Validate phone
-      if (phone.length < 7 || phone.length > 10) {
+      // digits is now ideally 09xxxxxxxx
+      if (!/^09\d{7,9}$/.test(digits)) {
         return ctx.reply(
           `${pe(PE.check, '❌')} <b>ဖုန်းနံပါတ် မှားယွင်းနေပါတယ်။</b>\n\n` +
-          `${pe(PE.notification, '📱')} ဥပမာ - <code>097xxxxxxx</code>\n` +
+          `${pe(PE.notification, '📱')} ဥပမာ:\n` +
+          `• <code>09123456789</code>\n` +
+          `• <code>9123456789</code>\n` +
+          `• <code>959123456789</code>\n` +
           `ကျေးဇူးပြု၍ ပြန်လည်စစ်ဆေးပေးပါ။`,
           {
             parse_mode: 'HTML',
@@ -3347,7 +3383,12 @@ const authWizard = new Scenes.WizardScene<any>(
         );
       }
 
-      ctx.wizard.state.phone = phone;
+      const phone09 = digits;
+      const phone95 = '95' + digits.slice(1);
+      const phone9 = digits.slice(1); // without leading 0
+
+      ctx.wizard.state.phone = phone09;
+      ctx.wizard.state.phoneDisplay = phone09;
 
       let loadingMsg: any;
 
@@ -3359,12 +3400,27 @@ const authWizard = new Scenes.WizardScene<any>(
           }
         );
 
-        const res = await atomApiPost(
-          '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.2',
-          {
-            msisdn: phone,
+        // Try 09 / 95 / 9 formats — keep the one that succeeds
+        const candidates = [phone09, phone95, phone9];
+        let res: any = null;
+        let usedMsisdn = phone09;
+
+        for (const msisdn of candidates) {
+          res = await atomApiPost(
+            '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.2',
+            { msisdn }
+          );
+          console.error(
+            '[ATOM send-otp]',
+            msisdn,
+            res?.status,
+            JSON.stringify(res)?.slice(0, 400)
+          );
+          if (res && res.status === 'success' && res.data?.attribute?.code) {
+            usedMsisdn = msisdn;
+            break;
           }
-        );
+        }
 
         await ctx.telegram
           .deleteMessage(ctx.chat.id, loadingMsg.message_id)
@@ -3375,12 +3431,13 @@ const authWizard = new Scenes.WizardScene<any>(
           res.status === 'success' &&
           res.data?.attribute?.code
         ) {
-          ctx.wizard.state.otpCode =
-            res.data.attribute.code;
+          ctx.wizard.state.otpCode = res.data.attribute.code;
+          ctx.wizard.state.phone = usedMsisdn;
 
           await ctx.reply(
             `${pe(PE.otp, '📨')} <b>OTP ပို့လိုက်ပါပြီ။</b>\n\n` +
-            `${pe(PE.notification, '📱')} <b>+95${phone}</b> ကို OTP ပို့ထားပါတယ်။\n\n` +
+            `${pe(PE.notification, '📱')} <b>${phone09}</b> ကို OTP ပို့ထားပါတယ်။\n\n` +
+            `ဂဏန်း <b>၆ လုံး</b> ရိုက်ထည့်ပေးပါ။\n` +
             `${pe(PE.check, '❌')} မလုပ်လိုပါက <code>/cancel</code> ကိုနှိပ်ပါ။`,
             {
               parse_mode: 'HTML',
@@ -3526,14 +3583,37 @@ const authWizard = new Scenes.WizardScene<any>(
           }
         );
 
-        const res = await atomApiPost(
-          '/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.2',
-          {
-            msisdn: phone,
-            code: otpCode,
-            otp: otp,
-          }
-        );
+        // Try code + otpId field names and a few msisdn formats
+        let phone09 = String(phone || '').replace(/\D/g, '');
+        if (phone09.startsWith('959')) phone09 = '0' + phone09.slice(2);
+        if (!phone09.startsWith('0') && phone09.startsWith('9')) phone09 = '0' + phone09;
+        const phone95 = phone09.startsWith('0') ? '95' + phone09.slice(1) : phone09;
+        const phone9 = phone09.startsWith('0') ? phone09.slice(1) : phone09;
+
+        const bodies: any[] = [
+          { msisdn: phone, code: otpCode, otp },
+          { msisdn: phone, otpId: otpCode, otp },
+          { msisdn: phone09, code: otpCode, otp },
+          { msisdn: phone95, code: otpCode, otp },
+          { msisdn: phone9, code: otpCode, otp },
+          { msisdn: phone95, otpId: otpCode, otp },
+        ];
+
+        let res: any = null;
+        for (const body of bodies) {
+          res = await atomApiPost(
+            '/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.16.2',
+            body
+          );
+          console.error(
+            '[ATOM verify-otp]',
+            body.msisdn,
+            Object.keys(body).join(','),
+            res?.status,
+            JSON.stringify(res)?.slice(0, 500)
+          );
+          if (res && res.status === 'success' && res.data?.attribute) break;
+        }
 
         await ctx.telegram
           .deleteMessage(
@@ -3551,7 +3631,7 @@ const authWizard = new Scenes.WizardScene<any>(
 
           await saveSession(ctx.from.id, {
             token: payload.token,
-            msisdn: payload.msisdn,
+            msisdn: payload.msisdn || phone,
             userId: payload.user_id,
             subscriberId:
               payload.subscriber_id ||
@@ -3877,7 +3957,10 @@ const myidAuthWizard = new Scenes.WizardScene<any>(
     try {
       await ctx.reply(
         `${pe(PE.myid, '📲')} <b>MYTEL ဖုန်းနံပါတ် ရိုက်ထည့်ပေးပါ။</b>\n\n` +
-        `${pe(PE.notification, '📱')} ဥပမာ - <code>09xxxxxxxx</code>\n\n` +
+        `${pe(PE.notification, '📱')} ဥပမာ:\n` +
+        `• <code>09123456789</code>\n` +
+        `• <code>9123456789</code>\n` +
+        `• <code>959123456789</code>\n\n` +
         `${pe(PE.check, '❌')} မလုပ်လိုပါက <code>/cancel</code> ကိုနှိပ်ပါ။`,
         {
           parse_mode: 'HTML',
@@ -3935,22 +4018,24 @@ const myidAuthWizard = new Scenes.WizardScene<any>(
         );
       }
 
-      // Normalize phone
+      // Normalize phone — keep 09xxxxxxxx (do NOT strip leading 0)
       let phone = text.replace(/\D/g, '');
 
-      if (phone.startsWith('95')) {
-        phone = phone.slice(2);
+      if (phone.startsWith('959') && phone.length >= 11) {
+        phone = '0' + phone.slice(2);
+      }
+      if (!phone.startsWith('0') && phone.startsWith('9')) {
+        phone = '0' + phone;
       }
 
-      if (phone.startsWith('0')) {
-        phone = phone.slice(1);
-      }
-
-      // Validate phone
-      if (phone.length < 7 || phone.length > 10) {
+      // Validate phone — expect 09xxxxxxxx
+      if (!/^09\d{7,9}$/.test(phone)) {
         return ctx.reply(
           `${pe(PE.x, '❌')} <b>ဖုန်းနံပါတ် မှားယွင်းနေပါတယ်။</b>\n\n` +
-          `${pe(PE.notification, '📱')} ဥပမာ - <code>09xxxxxxxx</code>\n` +
+          `${pe(PE.notification, '📱')} ဥပမာ:\n` +
+          `• <code>09123456789</code>\n` +
+          `• <code>9123456789</code>\n` +
+          `• <code>959123456789</code>\n` +
           `ကျေးဇူးပြု၍ ပြန်ရိုက်ပေးပါ။`,
           {
             parse_mode: 'HTML',
