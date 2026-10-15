@@ -3112,14 +3112,9 @@ function setGameCooldown(userId: number) {
 
 const COMMON_HEADERS = {
   "accept": "application/json, text/plain, */*",
-  "accept-language": "en-US,en;q=0.9,my;q=0.8",
-  "user-agent": "MyTM/4.16.2/Android/34",
-  "device-name": "Xiaomi 2201122C",
-  "X-Client-Channel": "Android",
-  "x-server-select": "production",
-  "x-requested-with": "mm.com.atom.store",
-  "origin": "https://store.atom.com.mm",
-  "referer": "https://store.atom.com.mm/",
+  "user-agent": "MyTM/4.13.0/Android/30",
+  "device-name": "Xiaomi 2201122C", "X-Client-Channel": "Android",
+  "x-server-select": "production"
 };
 
 const botHttpsAgent = new https.Agent({
@@ -3179,7 +3174,7 @@ async function atomApiPost(endpoint: string, data: any, headers: any = {}, retri
   return null;
 }
 
-/** Atom OTP verify — multiple versions + payload formats + HTTP status logging */
+/** Atom OTP verify — multiple payload/header formats + HTTP status logging */
 async function atomVerifyOtpRequest(
   msisdn: string,
   codeJwt: string,
@@ -3189,48 +3184,20 @@ async function atomVerifyOtpRequest(
   const otp = String(otp6).replace(/\D/g, '');
   const code = String(codeJwt || '');
   const phone09 = msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
-  const phone95 = msisdn.startsWith('0') ? '95' + msisdn.slice(1) : msisdn.startsWith('95') ? msisdn : '95' + msisdn;
 
-  // Simpler headers that matched older successful verifies
-  const verifyHeaders = {
-    accept: 'application/json, text/plain, */*',
-    'user-agent': 'MyTM/4.13.0/Android/30',
-    'device-name': 'Xiaomi 2201122C',
-    'X-Client-Channel': 'Android',
-    'x-server-select': 'production',
-    'Content-Type': 'application/json',
-  };
-
-  const versions = ['4.13.0', '4.16.2'];
-  const variants: Array<{ label: string; url: string; data: any; headers?: any }> = [];
-
-  for (const v of versions) {
-    // JSON body variants
-    variants.push(
-      {
-        label: `v${v}-json-msisdn`,
-        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=${v}`,
-        data: { msisdn, code, otp },
-      },
-      {
-        label: `v${v}-json-empty`,
-        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
-        data: { msisdn, code, otp },
-      },
-      {
-        label: `v${v}-json-09`,
-        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
-        data: { msisdn: phone09, code, otp },
-      },
-      // form-urlencoded style (some ATOM endpoints prefer this)
-      {
-        label: `v${v}-form`,
-        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
-        data: new URLSearchParams({ msisdn, code, otp }).toString(),
-        headers: { ...verifyHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
-      }
-    );
-  }
+  // v=4.13.0 works (returns MyTM-token) — try first only
+  const variants: Array<{ label: string; url: string; data: any; headers?: any }> = [
+    {
+      label: 'v4.13',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.13.0`,
+      data: { msisdn, code, otp },
+    },
+    {
+      label: 'v4.13-empty-qs',
+      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.13.0`,
+      data: { msisdn, code, otp },
+    },
+  ];
 
   for (const v of variants) {
     try {
@@ -3240,41 +3207,30 @@ async function atomVerifyOtpRequest(
         url: v.url,
         data: v.data,
         headers: {
-          ...verifyHeaders,
+          ...COMMON_HEADERS,
+          Accept: 'application/json, text/plain, */*',
+          'Content-Type': 'application/json',
           ...(v.headers || {}),
         },
         validateStatus: () => true,
         timeout: 20000,
         maxRedirects: 0,
-        // force text first so we can see raw body even if empty object
-        transformResponse: [(data) => data],
       });
-
-      let body: any = res.data;
-      const rawPreview = typeof body === 'string' ? body.slice(0, 600) : String(body).slice(0, 600);
-      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} raw=${rawPreview}`);
-
-      // try parse JSON
-      if (typeof body === 'string') {
-        try {
-          body = JSON.parse(body);
-        } catch {
-          body = null;
-        }
-      }
-
+      const body = res.data;
+      const preview =
+        typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body)?.slice(0, 800);
+      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} body=${preview}`);
       if (body && typeof body === 'object' && body.status === 'success') {
+        // Log nested keys so we can see where token lives
         const d = body.data || {};
         console.error(
-          '[ATOM verify-try] SUCCESS data.keys=',
+          '[ATOM verify-try] data.keys=',
           Object.keys(d).join(','),
           'attr.keys=',
           d.attribute ? Object.keys(d.attribute).join(',') : 'none'
         );
         return body;
       }
-
-      await new Promise((r) => setTimeout(r, 300));
     } catch (e: any) {
       console.error(`[ATOM verify-try] ${v.label} ERR`, e.response?.status, e.message);
     }
@@ -3530,53 +3486,25 @@ const authWizard = new Scenes.WizardScene<any>(
           }
         );
 
-        // Try 09 / 95 / 9 formats + multiple API versions — keep the one that succeeds
+        // Try 09 / 95 / 9 formats — keep the one that succeeds
         const candidates = [phone09, phone95, phone9];
-        const otpVersions = ['4.13.0', '4.16.2'];
         let res: any = null;
         let usedMsisdn = phone09;
 
-        outer: for (const msisdn of candidates) {
-          for (const v of otpVersions) {
-            // style 1: empty msisdn in query (original)
-            res = await atomApiPost(
-              `/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=${v}`,
-              { msisdn }
-            );
-            console.error(
-              '[ATOM send-otp]',
-              msisdn,
-              `v=${v}`,
-              res?.status,
-              res?._httpStatus,
-              JSON.stringify(res)?.slice(0, 300)
-            );
-            if (res && res.status === 'success' && res.data?.attribute?.code) {
-              usedMsisdn = msisdn;
-              break outer;
-            }
-
-            await new Promise((r) => setTimeout(r, 800)); // small delay to avoid rate-limit
-
-            // style 2: msisdn also in query
-            res = await atomApiPost(
-              `/mytmapi/v1/my/local-auth/send-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=${v}`,
-              { msisdn }
-            );
-            console.error(
-              '[ATOM send-otp q]',
-              msisdn,
-              `v=${v}`,
-              res?.status,
-              res?._httpStatus,
-              JSON.stringify(res)?.slice(0, 300)
-            );
-            if (res && res.status === 'success' && res.data?.attribute?.code) {
-              usedMsisdn = msisdn;
-              break outer;
-            }
-
-            await new Promise((r) => setTimeout(r, 800));
+        for (const msisdn of candidates) {
+          res = await atomApiPost(
+            '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.2',
+            { msisdn }
+          );
+          console.error(
+            '[ATOM send-otp]',
+            msisdn,
+            res?.status,
+            JSON.stringify(res)?.slice(0, 400)
+          );
+          if (res && res.status === 'success' && res.data?.attribute?.code) {
+            usedMsisdn = msisdn;
+            break;
           }
         }
 
@@ -8018,26 +7946,16 @@ bot.hears('🎟️ TohToh ကူပွန်', async (ctx) => {
     // Success
     if (res?.status === 'success') {
       const count = parseCouponCount(res, 'tohtoh');
-      const attr = res?.data?.attribute || {};
-      const cb = attr.couponBalance || attr.toTohBalance || {};
-      const total = cb.totalCoupon ?? cb.total ?? count;
-      const normal = cb.normalCoupon ?? cb.normal ?? '-';
-      const special = cb.specialCoupon ?? cb.special ?? '-';
-
-      // full dump for debugging
-      console.error('[ATOM coupon tohtoh raw attr]', JSON.stringify(attr).slice(0, 800));
 
       const message =
         `${pe(PE.kiki, '🎟️')} <b>TohToh ကူပွန်အချက်အလက်</b>\n` +
         `════════════════════\n\n` +
+
         `${pe(PE.check, '🎟️')} <b>TohToh ဂိမ်း</b>\n` +
-        `└ ကစားခွင့် စုစုပေါင်း : <code>${total}</code> ကြိမ်\n` +
-        `└ Normal : <code>${normal}</code>\n` +
-        `└ Special : <code>${special}</code>\n\n` +
+        `└ ကစားခွင့် : <code>${count.toLocaleString()} ကြိမ်</code>\n\n` +
+
         `════════════════════\n` +
-        `${pe(PE.check, '✅')} <b>စစ်ဆေးမှု အောင်မြင်ပါသည်</b>\n\n` +
-        `<i>API က ပြန်ပေးတဲ့ အရေအတွက် ဖြစ်ပါတယ်။\n` +
-        `ATOM Store App မှာလည်း 0 ဆိုရင် တကယ်မရှိသေးတာ ဖြစ်နိုင်ပါတယ်။</i>`;
+        `${pe(PE.check, '✅')} <b>စစ်ဆေးမှု အောင်မြင်ပါသည်</b>`;
 
       return ctx.reply(message, {
         parse_mode: 'HTML'
@@ -8249,20 +8167,12 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
       chosenPrize: "Instant"
     };
 
-    // Game Draw – try multiple API versions (4.13.0 works for coupon, 4.16.2 may 404)
-    let res: any = null;
-    const drawVersions = ['4.13.0', '4.16.2'];
-    for (const v of drawVersions) {
-      res = await authApiPost(
-        ctx.from.id,
-        `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
-        bodyObj
-      );
-      console.error(`[ATOM tohtoh draw] v=${v}`, res?.status, res?._httpStatus, JSON.stringify(res)?.slice(0, 300));
-      if (res?._authFailed) break;
-      if (res?.status === 'success') break;
-      // continue to next version on 404 / failure
-    }
+    // Game Draw
+    const res = await authApiPost(
+      ctx.from.id,
+      `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
+      bodyObj
+    );
 
     setGameCooldown(ctx.from.id);
 
@@ -8488,19 +8398,12 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
       score: randomScore
     };
 
-    // Golden Farm Draw – try multiple API versions
-    let res: any = null;
-    const gfVersions = ['4.13.0', '4.16.2'];
-    for (const v of gfVersions) {
-      res = await authApiPost(
-        ctx.from.id,
-        `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
-        bodyObj
-      );
-      console.error(`[ATOM goldenfarm draw] v=${v}`, res?.status, res?._httpStatus);
-      if (res?._authFailed) break;
-      if (res?.status === 'success') break;
-    }
+    // Golden Farm Draw
+    const res = await authApiPost(
+      ctx.from.id,
+      `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
+      bodyObj
+    );
 
     setGameCooldown(ctx.from.id);
 
@@ -10530,18 +10433,11 @@ async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: 
       .filter((n: number) => Number.isFinite(n));
     if (levels.length) maxLevel = Math.max(...levels);
   }
-  let res: any = null;
-  const drawVersions = ['4.13.0', '4.16.2'];
-  for (const v of drawVersions) {
-    res = await authApiPost(
-      tgUserId,
-      `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
-      { isCompleted: 1, currentPlayLevel: maxLevel, chosenPrize: 'Instant' }
-    );
-    console.error(`[ATOM tohtoh draw scheduled] v=${v}`, res?.status, res?._httpStatus);
-    if (res?._authFailed) break;
-    if (res?.status === 'success') break;
-  }
+  const res = await authApiPost(
+    tgUserId,
+    `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
+    { isCompleted: 1, currentPlayLevel: maxLevel, chosenPrize: 'Instant' }
+  );
   setGameCooldown(tgUserId);
   if (res?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (res?.status === 'success' && res.data?.attribute) {
@@ -10583,18 +10479,11 @@ async function playGoldenFarmOnce(tgUserId: number): Promise<{ ok: boolean; priz
   }
   const minScore = Math.max(0, maxScore - 5);
   const randomScore = Math.floor(Math.random() * (maxScore - minScore + 1)) + minScore;
-  let res: any = null;
-  const gfVersions = ['4.13.0', '4.16.2'];
-  for (const v of gfVersions) {
-    res = await authApiPost(
-      tgUserId,
-      `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
-      { score: randomScore }
-    );
-    console.error(`[ATOM goldenfarm draw scheduled] v=${v}`, res?.status, res?._httpStatus);
-    if (res?._authFailed) break;
-    if (res?.status === 'success') break;
-  }
+  const res = await authApiPost(
+    tgUserId,
+    `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
+    { score: randomScore }
+  );
   setGameCooldown(tgUserId);
   if (res?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (res?.status === 'success' && res.data?.attribute) {
