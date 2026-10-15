@@ -3486,25 +3486,49 @@ const authWizard = new Scenes.WizardScene<any>(
           }
         );
 
-        // Try 09 / 95 / 9 formats — keep the one that succeeds
+        // Try 09 / 95 / 9 formats + multiple API versions — keep the one that succeeds
         const candidates = [phone09, phone95, phone9];
+        const otpVersions = ['4.13.0', '4.16.2'];
         let res: any = null;
         let usedMsisdn = phone09;
 
-        for (const msisdn of candidates) {
-          res = await atomApiPost(
-            '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.2',
-            { msisdn }
-          );
-          console.error(
-            '[ATOM send-otp]',
-            msisdn,
-            res?.status,
-            JSON.stringify(res)?.slice(0, 400)
-          );
-          if (res && res.status === 'success' && res.data?.attribute?.code) {
-            usedMsisdn = msisdn;
-            break;
+        outer: for (const msisdn of candidates) {
+          for (const v of otpVersions) {
+            // style 1: empty msisdn in query (original)
+            res = await atomApiPost(
+              `/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=${v}`,
+              { msisdn }
+            );
+            console.error(
+              '[ATOM send-otp]',
+              msisdn,
+              `v=${v}`,
+              res?.status,
+              res?._httpStatus,
+              JSON.stringify(res)?.slice(0, 300)
+            );
+            if (res && res.status === 'success' && res.data?.attribute?.code) {
+              usedMsisdn = msisdn;
+              break outer;
+            }
+
+            // style 2: msisdn also in query
+            res = await atomApiPost(
+              `/mytmapi/v1/my/local-auth/send-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=${v}`,
+              { msisdn }
+            );
+            console.error(
+              '[ATOM send-otp q]',
+              msisdn,
+              `v=${v}`,
+              res?.status,
+              res?._httpStatus,
+              JSON.stringify(res)?.slice(0, 300)
+            );
+            if (res && res.status === 'success' && res.data?.attribute?.code) {
+              usedMsisdn = msisdn;
+              break outer;
+            }
           }
         }
 
