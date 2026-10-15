@@ -8018,16 +8018,26 @@ bot.hears('🎟️ TohToh ကူပွန်', async (ctx) => {
     // Success
     if (res?.status === 'success') {
       const count = parseCouponCount(res, 'tohtoh');
+      const attr = res?.data?.attribute || {};
+      const cb = attr.couponBalance || attr.toTohBalance || {};
+      const total = cb.totalCoupon ?? cb.total ?? count;
+      const normal = cb.normalCoupon ?? cb.normal ?? '-';
+      const special = cb.specialCoupon ?? cb.special ?? '-';
+
+      // full dump for debugging
+      console.error('[ATOM coupon tohtoh raw attr]', JSON.stringify(attr).slice(0, 800));
 
       const message =
         `${pe(PE.kiki, '🎟️')} <b>TohToh ကူပွန်အချက်အလက်</b>\n` +
         `════════════════════\n\n` +
-
         `${pe(PE.check, '🎟️')} <b>TohToh ဂိမ်း</b>\n` +
-        `└ ကစားခွင့် : <code>${count.toLocaleString()} ကြိမ်</code>\n\n` +
-
+        `└ ကစားခွင့် စုစုပေါင်း : <code>${total}</code> ကြိမ်\n` +
+        `└ Normal : <code>${normal}</code>\n` +
+        `└ Special : <code>${special}</code>\n\n` +
         `════════════════════\n` +
-        `${pe(PE.check, '✅')} <b>စစ်ဆေးမှု အောင်မြင်ပါသည်</b>`;
+        `${pe(PE.check, '✅')} <b>စစ်ဆေးမှု အောင်မြင်ပါသည်</b>\n\n` +
+        `<i>API က ပြန်ပေးတဲ့ အရေအတွက် ဖြစ်ပါတယ်။\n` +
+        `ATOM Store App မှာလည်း 0 ဆိုရင် တကယ်မရှိသေးတာ ဖြစ်နိုင်ပါတယ်။</i>`;
 
       return ctx.reply(message, {
         parse_mode: 'HTML'
