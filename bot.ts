@@ -3112,9 +3112,14 @@ function setGameCooldown(userId: number) {
 
 const COMMON_HEADERS = {
   "accept": "application/json, text/plain, */*",
-  "user-agent": "MyTM/4.13.0/Android/30",
-  "device-name": "Xiaomi 2201122C", "X-Client-Channel": "Android",
-  "x-server-select": "production"
+  "accept-language": "en-US,en;q=0.9,my;q=0.8",
+  "user-agent": "MyTM/4.16.2/Android/34",
+  "device-name": "Xiaomi 2201122C",
+  "X-Client-Channel": "Android",
+  "x-server-select": "production",
+  "x-requested-with": "mm.com.atom.store",
+  "origin": "https://store.atom.com.mm",
+  "referer": "https://store.atom.com.mm/",
 };
 
 const botHttpsAgent = new https.Agent({
@@ -3174,7 +3179,7 @@ async function atomApiPost(endpoint: string, data: any, headers: any = {}, retri
   return null;
 }
 
-/** Atom OTP verify — multiple payload/header formats + HTTP status logging */
+/** Atom OTP verify — multiple versions + payload formats + HTTP status logging */
 async function atomVerifyOtpRequest(
   msisdn: string,
   codeJwt: string,
@@ -3184,20 +3189,36 @@ async function atomVerifyOtpRequest(
   const otp = String(otp6).replace(/\D/g, '');
   const code = String(codeJwt || '');
   const phone09 = msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
+  const phone95 = msisdn.startsWith('0') ? '95' + msisdn.slice(1) : msisdn.startsWith('95') ? msisdn : '95' + msisdn;
 
-  // v=4.13.0 works (returns MyTM-token) — try first only
-  const variants: Array<{ label: string; url: string; data: any; headers?: any }> = [
-    {
-      label: 'v4.13',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=4.13.0`,
-      data: { msisdn, code, otp },
-    },
-    {
-      label: 'v4.13-empty-qs',
-      url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=4.13.0`,
-      data: { msisdn, code, otp },
-    },
-  ];
+  // Try multiple versions and payload shapes (ATOM sometimes changes which one works)
+  const versions = ['4.13.0', '4.16.2'];
+  const variants: Array<{ label: string; url: string; data: any }> = [];
+
+  for (const v of versions) {
+    variants.push(
+      {
+        label: `v${v}-msisdn-in-qs`,
+        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=${v}`,
+        data: { msisdn, code, otp },
+      },
+      {
+        label: `v${v}-empty-qs`,
+        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
+        data: { msisdn, code, otp },
+      },
+      {
+        label: `v${v}-phone09`,
+        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
+        data: { msisdn: phone09, code, otp },
+      },
+      {
+        label: `v${v}-phone95`,
+        url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
+        data: { msisdn: phone95, code, otp },
+      }
+    );
+  }
 
   for (const v of variants) {
     try {
@@ -3210,7 +3231,6 @@ async function atomVerifyOtpRequest(
           ...COMMON_HEADERS,
           Accept: 'application/json, text/plain, */*',
           'Content-Type': 'application/json',
-          ...(v.headers || {}),
         },
         validateStatus: () => true,
         timeout: 20000,
@@ -3221,7 +3241,6 @@ async function atomVerifyOtpRequest(
         typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body)?.slice(0, 800);
       console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} body=${preview}`);
       if (body && typeof body === 'object' && body.status === 'success') {
-        // Log nested keys so we can see where token lives
         const d = body.data || {};
         console.error(
           '[ATOM verify-try] data.keys=',
@@ -3231,6 +3250,8 @@ async function atomVerifyOtpRequest(
         );
         return body;
       }
+      // small delay between tries
+      await new Promise((r) => setTimeout(r, 400));
     } catch (e: any) {
       console.error(`[ATOM verify-try] ${v.label} ERR`, e.response?.status, e.message);
     }
@@ -3512,6 +3533,8 @@ const authWizard = new Scenes.WizardScene<any>(
               break outer;
             }
 
+            await new Promise((r) => setTimeout(r, 800)); // small delay to avoid rate-limit
+
             // style 2: msisdn also in query
             res = await atomApiPost(
               `/mytmapi/v1/my/local-auth/send-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=${v}`,
@@ -3529,6 +3552,8 @@ const authWizard = new Scenes.WizardScene<any>(
               usedMsisdn = msisdn;
               break outer;
             }
+
+            await new Promise((r) => setTimeout(r, 800));
           }
         }
 
