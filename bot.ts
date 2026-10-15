@@ -3191,31 +3191,43 @@ async function atomVerifyOtpRequest(
   const phone09 = msisdn.startsWith('95') ? '0' + msisdn.slice(2) : msisdn;
   const phone95 = msisdn.startsWith('0') ? '95' + msisdn.slice(1) : msisdn.startsWith('95') ? msisdn : '95' + msisdn;
 
-  // Try multiple versions and payload shapes (ATOM sometimes changes which one works)
+  // Simpler headers that matched older successful verifies
+  const verifyHeaders = {
+    accept: 'application/json, text/plain, */*',
+    'user-agent': 'MyTM/4.13.0/Android/30',
+    'device-name': 'Xiaomi 2201122C',
+    'X-Client-Channel': 'Android',
+    'x-server-select': 'production',
+    'Content-Type': 'application/json',
+  };
+
   const versions = ['4.13.0', '4.16.2'];
-  const variants: Array<{ label: string; url: string; data: any }> = [];
+  const variants: Array<{ label: string; url: string; data: any; headers?: any }> = [];
 
   for (const v of versions) {
+    // JSON body variants
     variants.push(
       {
-        label: `v${v}-msisdn-in-qs`,
+        label: `v${v}-json-msisdn`,
         url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=${encodeURIComponent(msisdn)}&userid=-1&v=${v}`,
         data: { msisdn, code, otp },
       },
       {
-        label: `v${v}-empty-qs`,
+        label: `v${v}-json-empty`,
         url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
         data: { msisdn, code, otp },
       },
       {
-        label: `v${v}-phone09`,
+        label: `v${v}-json-09`,
         url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
         data: { msisdn: phone09, code, otp },
       },
+      // form-urlencoded style (some ATOM endpoints prefer this)
       {
-        label: `v${v}-phone95`,
+        label: `v${v}-form`,
         url: `${base}/mytmapi/v1/my/local-auth/verify-otp?msisdn=&userid=-1&v=${v}`,
-        data: { msisdn: phone95, code, otp },
+        data: new URLSearchParams({ msisdn, code, otp }).toString(),
+        headers: { ...verifyHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
       }
     );
   }
@@ -3228,30 +3240,41 @@ async function atomVerifyOtpRequest(
         url: v.url,
         data: v.data,
         headers: {
-          ...COMMON_HEADERS,
-          Accept: 'application/json, text/plain, */*',
-          'Content-Type': 'application/json',
+          ...verifyHeaders,
+          ...(v.headers || {}),
         },
         validateStatus: () => true,
         timeout: 20000,
         maxRedirects: 0,
+        // force text first so we can see raw body even if empty object
+        transformResponse: [(data) => data],
       });
-      const body = res.data;
-      const preview =
-        typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body)?.slice(0, 800);
-      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} body=${preview}`);
+
+      let body: any = res.data;
+      const rawPreview = typeof body === 'string' ? body.slice(0, 600) : String(body).slice(0, 600);
+      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} raw=${rawPreview}`);
+
+      // try parse JSON
+      if (typeof body === 'string') {
+        try {
+          body = JSON.parse(body);
+        } catch {
+          body = null;
+        }
+      }
+
       if (body && typeof body === 'object' && body.status === 'success') {
         const d = body.data || {};
         console.error(
-          '[ATOM verify-try] data.keys=',
+          '[ATOM verify-try] SUCCESS data.keys=',
           Object.keys(d).join(','),
           'attr.keys=',
           d.attribute ? Object.keys(d.attribute).join(',') : 'none'
         );
         return body;
       }
-      // small delay between tries
-      await new Promise((r) => setTimeout(r, 400));
+
+      await new Promise((r) => setTimeout(r, 300));
     } catch (e: any) {
       console.error(`[ATOM verify-try] ${v.label} ERR`, e.response?.status, e.message);
     }
