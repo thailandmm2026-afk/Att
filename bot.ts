@@ -8167,12 +8167,20 @@ bot.hears('🎮 TohToh ဆော့ရန်', async (ctx) => {
       chosenPrize: "Instant"
     };
 
-    // Game Draw
-    const res = await authApiPost(
-      ctx.from.id,
-      `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
-      bodyObj
-    );
+    // Game Draw – try multiple API versions (4.13.0 works for coupon, 4.16.2 may 404)
+    let res: any = null;
+    const drawVersions = ['4.13.0', '4.16.2'];
+    for (const v of drawVersions) {
+      res = await authApiPost(
+        ctx.from.id,
+        `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
+        bodyObj
+      );
+      console.error(`[ATOM tohtoh draw] v=${v}`, res?.status, res?._httpStatus, JSON.stringify(res)?.slice(0, 300));
+      if (res?._authFailed) break;
+      if (res?.status === 'success') break;
+      // continue to next version on 404 / failure
+    }
 
     setGameCooldown(ctx.from.id);
 
@@ -8398,12 +8406,19 @@ bot.hears('🐔 ရွှေလယ်တော ဆော့ရန်', async (ct
       score: randomScore
     };
 
-    // Golden Farm Draw
-    const res = await authApiPost(
-      ctx.from.id,
-      `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
-      bodyObj
-    );
+    // Golden Farm Draw – try multiple API versions
+    let res: any = null;
+    const gfVersions = ['4.13.0', '4.16.2'];
+    for (const v of gfVersions) {
+      res = await authApiPost(
+        ctx.from.id,
+        `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
+        bodyObj
+      );
+      console.error(`[ATOM goldenfarm draw] v=${v}`, res?.status, res?._httpStatus);
+      if (res?._authFailed) break;
+      if (res?.status === 'success') break;
+    }
 
     setGameCooldown(ctx.from.id);
 
@@ -10433,11 +10448,18 @@ async function playTohTohOnce(tgUserId: number): Promise<{ ok: boolean; prize?: 
       .filter((n: number) => Number.isFinite(n));
     if (levels.length) maxLevel = Math.max(...levels);
   }
-  const res = await authApiPost(
-    tgUserId,
-    `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
-    { isCompleted: 1, currentPlayLevel: maxLevel, chosenPrize: 'Instant' }
-  );
+  let res: any = null;
+  const drawVersions = ['4.13.0', '4.16.2'];
+  for (const v of drawVersions) {
+    res = await authApiPost(
+      tgUserId,
+      `/mytmapi/v1/my/tohtohunited/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
+      { isCompleted: 1, currentPlayLevel: maxLevel, chosenPrize: 'Instant' }
+    );
+    console.error(`[ATOM tohtoh draw scheduled] v=${v}`, res?.status, res?._httpStatus);
+    if (res?._authFailed) break;
+    if (res?.status === 'success') break;
+  }
   setGameCooldown(tgUserId);
   if (res?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (res?.status === 'success' && res.data?.attribute) {
@@ -10479,11 +10501,18 @@ async function playGoldenFarmOnce(tgUserId: number): Promise<{ ok: boolean; priz
   }
   const minScore = Math.max(0, maxScore - 5);
   const randomScore = Math.floor(Math.random() * (maxScore - minScore + 1)) + minScore;
-  const res = await authApiPost(
-    tgUserId,
-    `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=4.16.2`,
-    { score: randomScore }
-  );
+  let res: any = null;
+  const gfVersions = ['4.13.0', '4.16.2'];
+  for (const v of gfVersions) {
+    res = await authApiPost(
+      tgUserId,
+      `/mytmapi/v1/my/goldenfarm/draw?msisdn=${encodeURIComponent(sess.msisdn)}&userid=${encodeURIComponent(sess.userId)}&v=${v}`,
+      { score: randomScore }
+    );
+    console.error(`[ATOM goldenfarm draw scheduled] v=${v}`, res?.status, res?._httpStatus);
+    if (res?._authFailed) break;
+    if (res?.status === 'success') break;
+  }
   setGameCooldown(tgUserId);
   if (res?._authFailed) return { ok: false, message: 'ATOM token expired' };
   if (res?.status === 'success' && res.data?.attribute) {
