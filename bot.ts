@@ -40,7 +40,7 @@ const MYID_HEADERS = {
 };
 
 const myidHttpsAgent = new https.Agent({
-  rejectUnauthorized: false,
+  rejectUnauthorized: true,
   keepAlive: true,
 });
 
@@ -1454,7 +1454,7 @@ function findVasPackage(id: string) {
 const rawToken = (process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '').trim();
 console.log('[debug] cwd =', process.cwd());
 console.log('[debug] TELEGRAM_BOT_TOKEN length =', rawToken.length);
-console.log('[debug] TELEGRAM_BOT_TOKEN starts =', rawToken ? rawToken.slice(0, 10) + '...' : '(empty)');
+// Do not log any fragment of the Telegram bot token.
 
 if (!rawToken || rawToken.includes('your_bot_token') || rawToken.length < 30) {
   console.error('❌ TELEGRAM_BOT_TOKEN မတွေ့ပါ / တိုလွန်း / မမှန်ပါ။');
@@ -1469,7 +1469,7 @@ export const BOT_TOKEN = rawToken;
 // ==================== PIRATE WAR (Private War) ====================
 const PIRATE_API = 'https://api-piratemya.ugame.vn/api/';
 const PIRATE_AES_KEY = 'agerg&ujiwe@76362YGVdehnjn';
-const pirateHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+const pirateHttpsAgent = new https.Agent({ rejectUnauthorized: true });
 
 interface PirateSession {
   gameToken: string;
@@ -1978,7 +1978,7 @@ export const bot = new Telegraf<any>(BOT_TOKEN, {
   // OU Game playRound can take several minutes (8–20s per slot × 5 slots × up to 5 rounds)
   handlerTimeout: 10 * 60 * 1000, // 10 minutes
 });
-console.log('✅ Bot token loaded (...' + BOT_TOKEN.slice(-6) + ')');
+console.log('✅ Bot token loaded.');
 
 // ==========================================
 // 📢 CHANNEL FORCE-JOIN (REAL WORKING)
@@ -3118,7 +3118,7 @@ const COMMON_HEADERS = {
 };
 
 const botHttpsAgent = new https.Agent({
-  rejectUnauthorized: false,
+  rejectUnauthorized: true,
   keepAlive: true,
   keepAliveMsecs: 10000,
   maxSockets: 50,
@@ -3126,7 +3126,7 @@ const botHttpsAgent = new https.Agent({
   timeout: 60000
 });
 
-async function atomApiPost(endpoint: string, data: any, headers: any = {}, retries = 3) {
+async function atomApiPost(endpoint: string, data: any, headers: any = {}, retries = 1) {
   const url = endpoint.startsWith('http')
     ? endpoint
     : `https://store.atom.com.mm${endpoint}`;
@@ -3217,9 +3217,7 @@ async function atomVerifyOtpRequest(
         maxRedirects: 0,
       });
       const body = res.data;
-      const preview =
-        typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body)?.slice(0, 800);
-      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status} body=${preview}`);
+      console.error(`[ATOM verify-try] ${v.label} HTTP=${res.status}; response body redacted`);
       if (body && typeof body === 'object' && body.status === 'success') {
         // Log nested keys so we can see where token lives
         const d = body.data || {};
@@ -3496,12 +3494,7 @@ const authWizard = new Scenes.WizardScene<any>(
             '/mytmapi/v1/my/local-auth/send-otp?msisdn=&userid=-1&v=4.16.2',
             { msisdn }
           );
-          console.error(
-            '[ATOM send-otp]',
-            msisdn,
-            res?.status,
-            JSON.stringify(res)?.slice(0, 400)
-          );
+          console.error('[ATOM send-otp] HTTP result:', res?._httpStatus || res?.status || 'no response');
           if (res && res.status === 'success' && res.data?.attribute?.code) {
             usedMsisdn = msisdn;
             break;
@@ -3523,12 +3516,7 @@ const authWizard = new Scenes.WizardScene<any>(
           ctx.wizard.state.phone =
             attr.msisdn || usedMsisdn; // prefer server msisdn (959…)
           ctx.wizard.state.phoneDisplay = phone09;
-          console.error(
-            '[ATOM send-otp OK] serverMsisdn=',
-            attr.msisdn,
-            'codeLen=',
-            String(attr.code || '').length
-          );
+          console.error('[ATOM send-otp] challenge received; sensitive values redacted');
 
           await ctx.reply(
             `${pe(PE.otp, '📨')} <b>OTP ပို့လိုက်ပါပြီ။</b>\n\n` +
@@ -3693,10 +3681,7 @@ const authWizard = new Scenes.WizardScene<any>(
           String(otp).length,
           'codeLen=',
           String(otpCode).length,
-          'msisdn=',
-          msisdn,
-          'otp=',
-          otp
+          'msisdn/otp values redacted'
         );
 
         // Try multiple request formats (JSON / form / Bearer)
@@ -3706,8 +3691,7 @@ const authWizard = new Scenes.WizardScene<any>(
           res?.status,
           'keys=',
           res ? Object.keys(res).join(',') : 'null',
-          'body=',
-          JSON.stringify(res)?.slice(0, 400)
+          'response body redacted'
         );
 
         await ctx.telegram
@@ -3751,16 +3735,7 @@ const authWizard = new Scenes.WizardScene<any>(
           attr.refreshToken ||
           dataObj.refresh_token;
 
-        console.error(
-          '[ATOM verify OK?] tokenLen=',
-          token.length,
-          'msisdn=',
-          msisdnSaved,
-          'userId=',
-          userId,
-          'dataType=',
-          dataObj.type
-        );
+        console.error('[ATOM verify] response parsed; token and account identifiers redacted');
 
         if (res?.status === 'success' && token) {
           await saveSession(ctx.from.id, {
@@ -3785,10 +3760,7 @@ const authWizard = new Scenes.WizardScene<any>(
 
         // success but no token in expected fields — log full body once
         if (res?.status === 'success') {
-          console.error(
-            '[ATOM verify success but NO TOKEN] full=',
-            JSON.stringify(res)?.slice(0, 1500)
-          );
+          console.error('[ATOM verify] success response had no recognized token field; body redacted');
         }
 
         const errMsg =
@@ -9474,7 +9446,7 @@ interface CityRunProfile {
 }
 
 const cityrunHttpsAgent = new https.Agent({
-    rejectUnauthorized: false,
+    rejectUnauthorized: true,
     keepAlive: true,
 });
 
