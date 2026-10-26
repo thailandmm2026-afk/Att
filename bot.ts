@@ -9451,7 +9451,11 @@ const cityrunHttpsAgent = new https.Agent({
 });
 
 class CityRunHttpClient {
-    constructor(private session: CityRunSession) {}
+    private session: CityRunSession;
+
+    constructor(session: CityRunSession) {
+        this.session = session;
+    }
 
     private getHeaders() {
         const headers: any = {
